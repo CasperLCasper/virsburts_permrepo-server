@@ -1,4 +1,4 @@
-import { ethers } from 'ethers';
+const { ethers } = window;
 
 const CHAIN_ID = '0x14a34';
 
