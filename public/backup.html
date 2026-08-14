@@ -4,15 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PermRepo — Backups</title>
-    <script type="importmap">
-    {
-      "imports": {
-        "ethers": "https://esm.sh/ethers@6.7.0",
-        "@ardrive/turbo-sdk": "https://esm.sh/@ardrive/turbo-sdk",
-        "@dha-team/arbundles": "https://esm.sh/@dha-team/arbundles"
-      }
-    }
-    </script>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -61,12 +52,12 @@
             <span class="info-label">Maka adrese</span>
             <input type="text" id="walletInput" placeholder="0x..." readonly>
         </div>
-        <button id="connectWalletButton" class="sign-button">Savienot maku</button>
     </div>
     
     <div class="status" id="status"></div>
     <div class="error" id="error"></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 <script type="module" src="js/backup.js"></script>
 </body>
 </html>
