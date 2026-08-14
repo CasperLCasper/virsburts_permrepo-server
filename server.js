@@ -4,6 +4,8 @@ import { fileURLToPath } from 'url';
 import { ethers } from 'ethers';
 import crypto from 'crypto';
 import session from 'express-session';
+import { Redis } from '@upstash/redis';
+import { RedisStore } from 'connect-redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,12 +19,14 @@ const PORT = process.env.PORT || 3000;
 const RPC_URL = process.env.RPC_URL;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
-const ARWEAVE_GATEWAY = process.env.ARWEAVE_GATEWAY || 'https://arweave.net';
+const ARWEAVE_GATEWAY = process.env.ARWEAVE_GATEWAY || 'https://ar-io.dev';
 const API_KEY = process.env.API_KEY || '';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const UPSTASH_REDIS_URL = process.env.UPSTASH_REDIS_URL;
+const UPSTASH_REDIS_TOKEN = process.env.UPSTASH_REDIS_TOKEN;
 
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
@@ -39,12 +43,35 @@ const SUBSCRIPTION_ABI = [
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(session({
+
+// ==========================================
+// SESIJU KONFIGURĀCIJA ar Upstash Redis
+// ==========================================
+let sessionConfig = {
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: true,
     cookie: { secure: false, maxAge: 3600000 }
-}));
+};
+
+if (UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN) {
+    const redis = new Redis({
+        url: UPSTASH_REDIS_URL,
+        token: UPSTASH_REDIS_TOKEN,
+    });
+    
+    const redisStore = new RedisStore({
+        client: redis,
+        prefix: 'permrepo:',
+    });
+    
+    sessionConfig.store = redisStore;
+    console.log('✅ Izmanto Upstash Redis sesiju glabātuvi');
+} else {
+    console.log('⚠️ Izmanto MemoryStore (testam OK, mainnetam vajag Redis)');
+}
+
+app.use(session(sessionConfig));
 
 function checkApiKey(req, res, next) {
     if (API_KEY && req.headers['x-api-key'] !== API_KEY) {
@@ -313,15 +340,12 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         
         for (const file of currentFiles) {
             if (previousPaths[file.path] && previousPaths[file.path].id) {
-                // Fails jau ir backupēts — pārbaudam, vai hash sakrīt
-                // Ja hash nav pieejams manifestā, pieņemam, ka fails ir mainījies
                 unchangedFiles[file.path] = {
                     txId: previousPaths[file.path].id,
                     size: file.size,
                     hash: file.hash
                 };
             } else {
-                // Jauns fails
                 changedFiles.push(file);
             }
         }
@@ -405,7 +429,8 @@ app.get('/api/health', (req, res) => {
             nft: !!NFT_ADDRESS,
             subscription: !!SUBSCRIPTION_ADDRESS,
             apiKey: !!API_KEY,
-            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET)
+            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET),
+            upstashRedis: !!(UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN)
         }
     });
 });
@@ -426,5 +451,6 @@ app.listen(PORT, () => {
     console.log('  GITHUB_CLIENT_ID:', GITHUB_CLIENT_ID ? 'IR' : 'NAV');
     console.log('  GITHUB_CLIENT_SECRET:', GITHUB_CLIENT_SECRET ? 'IR' : 'NAV');
     console.log('  API_KEY:', API_KEY ? 'IR' : 'NAV');
+    console.log('  UPSTASH_REDIS:', (UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN) ? 'IR' : 'NAV');
     console.log('========================================');
 });
