@@ -150,7 +150,7 @@ app.get('/api/backup-info/:backupId', checkApiKey, (req, res) => {
 // ==========================================
 app.post('/api/execute-backup', checkApiKey, async (req, res) => {
     try {
-        const { backupId, paymentTxHash, walletAddress } = req.body;
+        const { backupId, walletAddress } = req.body;
         
         console.log('\n=== BACKUP IZPILDE ===');
         console.log('Backup ID:', backupId);
