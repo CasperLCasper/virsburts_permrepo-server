@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PermRepo — Abonementa Iegāde</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "ethers": "https://esm.sh/ethers@6.7.0"
+      }
+    }
+    </script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="container text-center">
+    <h1>📅 PermRepo Abonements</h1>
+    <p class="subtitle">Iegādājies abonementu, lai aktivizētu backupus</p>
+    
+    <div class="info-row text-left">
+        <span class="info-label">Repo</span>
+        <input type="text" id="repoInput" placeholder="piem., lietotajs/repo" value="">
+    </div>
+    
+    <div class="info-row text-left">
+        <span class="info-label">Cena</span>
+        <span class="info-value">2 USDC / 30 dienas</span>
+    </div>
+    
+    <button id="subscribeButton" class="sign-button" disabled>⏳ Gaida savienojumu...</button>
+    <div class="status" id="status"></div>
+    <div class="error" id="error"></div>
+</div>
+<script type="module" src="js/subscribe.js"></script>
+</body>
+</html>
