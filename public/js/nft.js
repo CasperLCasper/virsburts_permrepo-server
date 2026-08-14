@@ -1,7 +1,6 @@
-import { ethers } from 'ethers';
+const { ethers } = window;
 
 const CHAIN_ID = '0x14a34';
-
 const NFT_ADDRESS = '0xeD3eB455cAeb057a034d7bE2368cdCEA37Faa1d4';
 
 const NFT_ABI = [
