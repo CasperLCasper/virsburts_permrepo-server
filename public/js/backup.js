@@ -4,14 +4,22 @@ import { InjectedEthereumSigner } from '@dha-team/arbundles';
 
 let CONFIG = {
     chainId: '0x14a34',
-    treasuryAddress: '',
     nftAddress: '',
-    subscriptionAddress: ''
+    subscriptionAddress: '',
+    rpcUrl: '',
+    arweaveGateway: 'https://arweave.net'
 };
 
 let signer = null;
 let userAddress = null;
 let currentRepo = null;
+let currentTokenId = '0';
+let currentUnchangedFiles = {};
+
+const NFT_ABI = [
+    "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external",
+    "function getNonce(uint256 tokenId) external view returns (uint256)"
+];
 
 async function init() {
     // Iegūt konfigurāciju no servera
@@ -122,8 +130,13 @@ async function checkRepoStatus(repoName) {
     const result = await response.json();
     
     if (result.success) {
+        currentTokenId = result.tokenId;
+        
         if (result.hasNFT) {
-            document.getElementById('nftStatus').textContent = '✅ NFT atrasts';
+            document.getElementById('nftStatus').textContent = '✅ NFT atrasts (Token ID: ' + result.tokenId + ')';
+            if (result.backupCount > 0) {
+                document.getElementById('nftStatus').textContent += ' | Backupi: ' + result.backupCount;
+            }
         } else {
             document.getElementById('nftStatus').innerHTML = 
                 '❌ Nav NFT — <a href="/nft.html?repo=' + encodeURIComponent(repoName) + '">Izveidot NFT</a>';
@@ -168,8 +181,17 @@ async function prepareBackup() {
     const result = await response.json();
     
     if (result.success) {
-        setStatus('Augšupielādējam Arweave...');
-        await uploadFilesWithMetaMask(result.files, result.repoName);
+        currentUnchangedFiles = result.unchangedFiles || {};
+        
+        if (result.files.length === 0) {
+            setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
+            button.disabled = false;
+            button.textContent = 'Sākt backupu';
+            return;
+        }
+        
+        setStatus(`Augšupielādējam ${result.files.length} failus...`);
+        await uploadFilesWithMetaMask(result.files, result.repoName, result.tokenId);
     } else {
         showError(result.error || 'Kļūda');
         button.disabled = false;
@@ -177,7 +199,7 @@ async function prepareBackup() {
     }
 }
 
-async function uploadFilesWithMetaMask(files, repoName) {
+async function uploadFilesWithMetaMask(files, repoName, tokenId) {
     const button = document.getElementById('backupButton');
     button.textContent = '⏳ Augšupielādē...';
     
@@ -201,7 +223,7 @@ async function uploadFilesWithMetaMask(files, repoName) {
                     fileStreamFactory: () => fileBuffer,
                     fileSizeFactory: () => fileBuffer.length,
                     fundingMode: new OnDemandFunding({
-                        maxTokenAmount: ETHToTokenAmount(0.001), // Max 0.001 ETH
+                        maxTokenAmount: ETHToTokenAmount(0.001),
                     }),
                     dataItemOpts: {
                         tags: [
@@ -237,16 +259,79 @@ async function uploadFilesWithMetaMask(files, repoName) {
             }
         }
         
-        // Visi faili augšupielādēti!
-        setStatus('✅ Visi faili augšupielādēti!');
+        // Visi faili augšupielādēti — izveidojam manifestu
+        setStatus('Veidojam manifestu...');
+        
+        const manifest = {
+            manifest: 'arweave/paths',
+            version: '0.2.0',
+            index: { path: 'README.md' },
+            paths: {},
+            metadata: {
+                repo: repoName,
+                timestamp: new Date().toISOString(),
+                generatedBy: 'PermRepo v1.0.0'
+            }
+        };
+        
+        // Pievienot jaunos failus
+        for (const f of uploadResults) {
+            manifest.paths[f.path] = { id: f.txId };
+        }
+        
+        // Pievienot nemainītos failus
+        for (const [fp, info] of Object.entries(currentUnchangedFiles)) {
+            manifest.paths[fp] = { id: info.txId };
+        }
+        
+        // Augšupielādēt manifestu
+        const manifestBuffer = Buffer.from(JSON.stringify(manifest, null, 2), 'utf-8');
+        const manifestResult = await turbo.uploadFile({
+            fileStreamFactory: () => manifestBuffer,
+            fileSizeFactory: () => manifestBuffer.length,
+            fundingMode: new OnDemandFunding({
+                maxTokenAmount: ETHToTokenAmount(0.001),
+            }),
+            dataItemOpts: {
+                tags: [
+                    { name: 'App-Name', value: 'PermRepo' },
+                    { name: 'Type', value: 'path-manifest' },
+                    { name: 'Repo', value: repoName },
+                    { name: 'Content-Type', value: 'application/x.arweave-manifest+json' },
+                    { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
+                ]
+            }
+        });
+        
+        const manifestTxId = manifestResult.id;
+        console.log('Manifests:', manifestTxId);
+        
+        // Aprēķināt Merkle root
+        setStatus('Aprēķinam Merkle root...');
+        const merkleRoot = calculateMerkleRoot(manifest.paths);
+        const manifestHash = ethers.keccak256(Buffer.from(JSON.stringify(manifest)));
+        
+        // Izsaukt addBackup uz blockchain
+        setStatus('Ierakstam backupu blockchain...');
+        await addBackupToBlockchain(
+            tokenId,
+            manifestHash,
+            merkleRoot,
+            `ar://${manifestTxId}`
+        );
+        
+        setStatus('✅ Backups veiksmīgi pabeigts!');
         button.textContent = '✅ Pabeigts!';
         
         document.getElementById('status').textContent = 
             `✅ Backups veiksmīgs!\n` +
-            `Faili: ${uploadResults.length}\n` +
-            `Kopējais izmērs: ${formatBytes(uploadResults.reduce((sum, f) => sum + f.size, 0))}`;
+            `Faili: ${uploadResults.length} jauni + ${Object.keys(currentUnchangedFiles).length} nemainīti\n` +
+            `Manifests: ar://${manifestTxId}\n` +
+            `Merkle Root: ${merkleRoot.substring(0, 20)}...`;
         
         console.log('Upload results:', uploadResults);
+        console.log('Manifest:', manifestTxId);
+        console.log('Merkle Root:', merkleRoot);
         
     } catch (e) {
         console.error('Augšupielādes kļūda:', e.message);
@@ -254,6 +339,115 @@ async function uploadFilesWithMetaMask(files, repoName) {
         button.disabled = false;
         button.textContent = 'Sākt backupu';
     }
+}
+
+function calculateMerkleRoot(paths) {
+    const entries = Object.entries(paths).sort(([a], [b]) => a.localeCompare(b));
+    
+    if (entries.length === 0) {
+        return '0x0000000000000000000000000000000000000000000000000000000000000000';
+    }
+    
+    if (entries.length === 1) {
+        const [path, info] = entries[0];
+        return ethers.keccak256(
+            ethers.AbiCoder.defaultAbiCoder().encode(
+                ['string', 'string'],
+                [path, info.id]
+            )
+        );
+    }
+    
+    let currentLevel = entries.map(([path, info]) => {
+        return ethers.keccak256(
+            ethers.AbiCoder.defaultAbiCoder().encode(
+                ['string', 'string'],
+                [path, info.id]
+            )
+        );
+    });
+    
+    while (currentLevel.length > 1) {
+        const nextLevel = [];
+        for (let i = 0; i < currentLevel.length; i += 2) {
+            const left = currentLevel[i];
+            const right = currentLevel[i + 1] || left;
+            nextLevel.push(
+                ethers.keccak256(
+                    ethers.AbiCoder.defaultAbiCoder().encode(
+                        ['bytes32', 'bytes32'],
+                        [left, right]
+                    )
+                )
+            );
+        }
+        currentLevel = nextLevel;
+    }
+    
+    return currentLevel[0];
+}
+
+async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifestURI) {
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const signerContract = await provider.getSigner();
+    
+    const nftContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, signerContract);
+    
+    // Aprēķināt deadline (10 minūtes)
+    const deadline = Math.floor(Date.now() / 1000) + 600;
+    
+    // Iegūt nonce no kontrakta
+    const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
+    const currentNonce = await readContract.getNonce(tokenId);
+    
+    // Izveidot EIP-712 parakstu
+    const domain = {
+        name: 'PermRepo',
+        version: '1',
+        chainId: 84532, // Base Sepolia
+        verifyingContract: CONFIG.nftAddress
+    };
+    
+    const types = {
+        AddBackup: [
+            { name: 'tokenId', type: 'uint256' },
+            { name: 'backupNumber', type: 'uint256' },
+            { name: 'manifestHash', type: 'bytes32' },
+            { name: 'merkleRoot', type: 'bytes32' },
+            { name: 'deadline', type: 'uint256' },
+            { name: 'nonce', type: 'uint256' }
+        ]
+    };
+    
+    // Iegūt backupNumber
+    const backupNumber = await readContract.backupCount(tokenId);
+    
+    const value = {
+        tokenId: tokenId,
+        backupNumber: backupNumber + 1n,
+        manifestHash: manifestHash,
+        merkleRoot: merkleRoot,
+        deadline: BigInt(deadline),
+        nonce: currentNonce
+    };
+    
+    // Parakstīt ar MetaMask
+    const signature = await signerContract.signTypedData(domain, types, value);
+    
+    // Izsaukt addBackup ar parakstu
+    const tx = await nftContract.addBackup(
+        tokenId,
+        manifestHash,
+        merkleRoot,
+        manifestURI,
+        deadline,
+        signature
+    );
+    
+    await tx.wait();
+    console.log('addBackup transakcija veiksmīga:', tx.hash);
+    
+    return tx.hash;
 }
 
 function formatBytes(bytes) {
