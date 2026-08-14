@@ -4,8 +4,9 @@ const CHAIN_ID = '0x14a34';
 const TREASURY_ADDRESS = '0x349c78525Dbb6aCfE60c96546174dC1627028b62';
 
 const params = new URLSearchParams(window.location.search);
+const backupId = params.get('backupId') || '';
 const repoFromUrl = params.get('repo') || '';
-const amountParam = params.get('amount') || '0.000001';
+const amountParam = params.get('amount') || '0';
 
 let signer, userAddress;
 
@@ -13,6 +14,11 @@ async function init() {
     document.getElementById('repoInput').value = repoFromUrl;
     document.getElementById('amountDisplay').textContent = amountParam + ' ETH';
     document.getElementById('treasuryAddress').textContent = TREASURY_ADDRESS;
+    
+    if (!backupId) {
+        showError('Nav backup ID!');
+        return;
+    }
     
     if (!window.ethereum) {
         showError('Lūdzu instalē MetaMask!');
@@ -31,8 +37,8 @@ async function init() {
         
         const button = document.getElementById('payButton');
         button.disabled = false;
-        button.textContent = 'Iemaksāt un Parakstīt';
-        button.onclick = payAndSign;
+        button.textContent = 'Iemaksāt un Apstiprināt';
+        button.onclick = payAndExecute;
         
         setStatus('Gatavs!');
     } catch (e) {
@@ -40,55 +46,56 @@ async function init() {
     }
 }
 
-async function payAndSign() {
-    const repo = document.getElementById('repoInput').value.trim();
-    
-    if (!repo) {
-        showError('Ievadi repo nosaukumu!');
-        return;
-    }
-    
+async function payAndExecute() {
     const button = document.getElementById('payButton');
     button.disabled = true;
-    button.textContent = '⏳ Iemaksā...';
     
     try {
+        // 1. Iemaksāt Treasury
         setStatus('1/3: Iemaksājam Treasury...');
+        button.textContent = '⏳ Iemaksā...';
+        
         const tx = await signer.sendTransaction({
             to: TREASURY_ADDRESS,
             value: ethers.parseEther(amountParam)
         });
         
         setStatus('2/3: Gaida transakcijas apstiprinājumu...');
+        button.textContent = '⏳ Gaida...';
         await tx.wait();
         
-        setStatus('3/3: Parakstām autorizāciju...');
-        button.textContent = '⏳ Paraksta...';
+        setStatus('3/3: Izpilda backupu...');
+        button.textContent = '⏳ Backups...';
         
-        const timestamp = Math.floor(Date.now() / 1000);
-        const message = [
-            'PermRepo Backup Authorization',
-            `Repository: ${repo}`,
-            `Timestamp: ${timestamp}`,
-            `Address: ${userAddress}`
-        ].join('\n');
+        // 2. Izsaukt Render, lai pabeigtu backupu
+        const response = await fetch('/api/execute-backup', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                backupId: backupId,
+                paymentTxHash: tx.hash,
+                walletAddress: userAddress
+            })
+        });
         
-        const signature = await signer.signMessage(message);
+        const result = await response.json();
         
-        const payload = {
-            address: userAddress,
-            signature: signature,
-            message: message,
-            timestamp: timestamp
-        };
-        
-        const jsonBody = JSON.stringify(payload, null, 2);
-        const body = '```json\n' + jsonBody + '\n```';
-        const issueTitle = `[PermRepo Backup] ${userAddress.substring(0, 10)}...`;
-        const issueUrl = `https://github.com/${repo}/issues/new?title=${encodeURIComponent(issueTitle)}&body=${encodeURIComponent(body)}`;
-        
-        setStatus('✅ Gatavs! Novirzam uz GitHub...');
-        setTimeout(() => { window.location.href = issueUrl; }, 1500);
+        if (result.success) {
+            setStatus('✅ Backups veiksmīgs!');
+            button.textContent = '✅ Pabeigts!';
+            
+            setTimeout(() => {
+                document.getElementById('status').textContent = 
+                    `✅ Backups pabeigts!\nManifests: ${result.manifestTxId}`;
+            }, 1000);
+            
+        } else {
+            showError(result.error || 'Kļūda');
+            button.disabled = false;
+            button.textContent = 'Mēģināt vēlreiz';
+        }
         
     } catch (e) {
         if (e.code === 'ACTION_REJECTED') {
@@ -97,7 +104,7 @@ async function payAndSign() {
             showError(e.message);
         }
         button.disabled = false;
-        button.textContent = 'Iemaksāt un Parakstīt';
+        button.textContent = 'Iemaksāt un Apstiprināt';
     }
 }
 
