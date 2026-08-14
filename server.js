@@ -299,7 +299,8 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
             paymentServiceConfig: { url: TURBO_PAYMENT_URL }
         });
         
-        const costs = await turbo.getUploadCosts({ bytes: totalBytes });
+        // PAREIZI: bytes ir MASĪVS
+        const costs = await turbo.getUploadCosts({ bytes: [totalBytes] });
         const costInfo = costs[0];
         const costWei = ethers.parseEther(costInfo.tokenAmount.toString());
         const costEth = ethers.formatEther(costWei);
