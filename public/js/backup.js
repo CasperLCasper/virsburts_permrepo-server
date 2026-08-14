@@ -1,7 +1,11 @@
 import { ethers } from 'ethers';
 
-const CHAIN_ID = '0x14a34';
-const TREASURY_ADDRESS = '0x349c78525Dbb6aCfE60c96546174dC1627028b62';
+let CONFIG = {
+    chainId: '0x14a34',
+    treasuryAddress: '',
+    nftAddress: '',
+    subscriptionAddress: ''
+};
 
 let githubToken = null;
 let walletAddress = null;
@@ -10,6 +14,14 @@ let currentBackupId = null;
 let currentRepo = null;
 
 async function init() {
+    // Iegūt konfigurāciju no servera
+    try {
+        const configResponse = await fetch('/api/config');
+        CONFIG = await configResponse.json();
+    } catch (e) {
+        console.error('Neizdevās iegūt konfigurāciju:', e.message);
+    }
+    
     // Pārbaudīt GitHub autorizāciju
     const userResponse = await fetch('/api/github/user');
     const userData = await userResponse.json();
@@ -104,7 +116,6 @@ async function checkRepoStatus(repoName) {
         if (result.hasNFT) {
             document.getElementById('nftStatus').textContent = '✅ NFT atrasts';
         } else {
-            document.getElementById('nftStatus').textContent = '❌ Nav NFT';
             document.getElementById('nftStatus').innerHTML = 
                 '❌ Nav NFT — <a href="/nft.html?repo=' + encodeURIComponent(repoName) + '">Izveidot NFT</a>';
         }
@@ -173,7 +184,7 @@ async function payAndExecute() {
         const amount = document.getElementById('amountDisplay').textContent.replace(' ETH', '');
         
         const tx = await signer.sendTransaction({
-            to: TREASURY_ADDRESS,
+            to: CONFIG.treasuryAddress,
             value: ethers.parseEther(amount)
         });
         
