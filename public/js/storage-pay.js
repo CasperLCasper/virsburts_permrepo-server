@@ -75,7 +75,6 @@ async function payAndExecute() {
             },
             body: JSON.stringify({
                 backupId: backupId,
-                paymentTxHash: tx.hash,
                 walletAddress: userAddress
             })
         });
