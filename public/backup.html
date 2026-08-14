@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PermRepo — Backups</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "ethers": "https://esm.sh/ethers@6.7.0",
+        "@ardrive/turbo-sdk": "https://esm.sh/@ardrive/turbo-sdk",
+        "@dha-team/arbundles": "https://esm.sh/@dha-team/arbundles"
+      }
+    }
+    </script>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -50,18 +59,9 @@
     <div id="walletSection" style="display: none;">
         <div class="info-row text-left">
             <span class="info-label">Maka adrese</span>
-            <input type="text" id="walletInput" placeholder="0x...">
+            <input type="text" id="walletInput" placeholder="0x..." readonly>
         </div>
         <button id="connectWalletButton" class="sign-button">Savienot maku</button>
-    </div>
-    
-    <!-- Apmaksa -->
-    <div id="paymentSection" style="display: none;">
-        <div class="info-row text-left">
-            <span class="info-label">Apmaksas summa</span>
-            <span class="info-value" id="amountDisplay">-</span>
-        </div>
-        <button id="payButton" class="sign-button">Iemaksāt un Apstiprināt</button>
     </div>
     
     <div class="status" id="status"></div>
