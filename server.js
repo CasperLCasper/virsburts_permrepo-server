@@ -63,6 +63,19 @@ function checkApiKey(req, res, next) {
 }
 
 // ==========================================
+// IEGŪT KONFIGURĀCIJU (priekš frontend)
+// ==========================================
+app.get('/api/config', (req, res) => {
+    res.json({
+        chainId: '0x14a34',
+        treasuryAddress: TREASURY_ADDRESS,
+        nftAddress: NFT_ADDRESS,
+        subscriptionAddress: SUBSCRIPTION_ADDRESS,
+        rpcUrl: RPC_URL
+    });
+});
+
+// ==========================================
 // GITHUB OAUTH
 // ==========================================
 app.get('/api/github/login', (req, res) => {
@@ -82,7 +95,6 @@ app.get('/api/github/callback', async (req, res) => {
     }
     
     try {
-        // Apmainīt code pret access token
         const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
             method: 'POST',
             headers: {
@@ -102,7 +114,6 @@ app.get('/api/github/callback', async (req, res) => {
         if (tokenData.access_token) {
             req.session.githubToken = tokenData.access_token;
             
-            // Iegūt lietotāja informāciju
             const userResponse = await fetch('https://api.github.com/user', {
                 headers: {
                     'Authorization': `Bearer ${tokenData.access_token}`,
@@ -160,7 +171,6 @@ app.get('/api/github/repos', checkApiKey, async (req, res) => {
         
         const repos = await response.json();
         
-        // Formēt atbildi
         const repoList = repos.map(repo => ({
             name: repo.full_name,
             description: repo.description,
@@ -356,6 +366,9 @@ app.post('/api/execute-backup', checkApiKey, async (req, res) => {
         const treasuryBalance = await treasuryContract.balance();
         const requiredWei = BigInt(backup.costWei);
         
+        console.log('Treasury:', ethers.formatEther(treasuryBalance), 'ETH');
+        console.log('Nepieciešams:', ethers.formatEther(requiredWei), 'ETH');
+        
         if (treasuryBalance < requiredWei) {
             backup.status = 'pending';
             return res.status(400).json({ 
@@ -493,7 +506,7 @@ async function getRepoFiles(githubToken, owner, repo, path = '') {
     
     for (const item of contents) {
         if (item.type === 'file') {
-            if (item.size <= 104857600) { // 100 MB
+            if (item.size <= 104857600) {
                 const fileResponse = await fetch(item.download_url, {
                     headers: {
                         'Authorization': `Bearer ${githubToken}`
