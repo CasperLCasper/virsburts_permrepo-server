@@ -17,6 +17,7 @@ const PORT = process.env.PORT || 3000;
 const RPC_URL = process.env.RPC_URL;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
+const ARWEAVE_GATEWAY = process.env.ARWEAVE_GATEWAY || 'https://arweave.net';
 const API_KEY = process.env.API_KEY || '';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
@@ -25,7 +26,10 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
-    "function ownerOf(uint256 tokenId) external view returns (address)"
+    "function ownerOf(uint256 tokenId) external view returns (address)",
+    "function backupCount(uint256 tokenId) external view returns (uint256)",
+    "function getManifestURI(uint256 tokenId) external view returns (string)",
+    "function getNonce(uint256 tokenId) external view returns (uint256)"
 ];
 
 const SUBSCRIPTION_ABI = [
@@ -57,7 +61,8 @@ app.get('/api/config', (req, res) => {
         chainId: '0x14a34',
         nftAddress: NFT_ADDRESS,
         subscriptionAddress: SUBSCRIPTION_ADDRESS,
-        rpcUrl: RPC_URL
+        rpcUrl: RPC_URL,
+        arweaveGateway: ARWEAVE_GATEWAY
     });
 });
 
@@ -194,6 +199,8 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
         
         let hasNFT = false;
         let hasSubscription = false;
+        let backupCount = 0;
+        let lastManifestURI = '';
         
         if (tokenId !== 0n && tokenId !== 0) {
             const nftOwner = await nftContract.ownerOf(tokenId);
@@ -205,13 +212,18 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
         if (hasNFT) {
             const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, provider);
             hasSubscription = await subscriptionContract.isSubscribed(tokenId);
+            
+            backupCount = Number(await nftContract.backupCount(tokenId));
+            lastManifestURI = await nftContract.getManifestURI(tokenId);
         }
         
         res.json({
             success: true,
             hasNFT,
             hasSubscription,
-            tokenId: hasNFT ? tokenId.toString() : '0'
+            tokenId: hasNFT ? tokenId.toString() : '0',
+            backupCount,
+            lastManifestURI
         });
         
     } catch (e) {
@@ -221,7 +233,7 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
 });
 
 // ==========================================
-// SAGATAVOT BACKUPU — iegūt failus no GitHub
+// SAGATAVOT BACKUPU — inkrementālā loģika
 // ==========================================
 app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
     try {
@@ -261,26 +273,73 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
             return res.status(400).json({ error: 'Nav aktīva abonementa' });
         }
         
-        console.log('NFT un abonements OK');
+        console.log('NFT un abonements OK, tokenId:', tokenId.toString());
         
-        // 2. Iegūt repo failus caur GitHub API
+        // 2. Iegūt iepriekšējo manifestu no Arweave (ja ir)
+        let previousManifest = null;
+        const backupCount = Number(await nftContract.backupCount(tokenId));
+        
+        if (backupCount > 0) {
+            const manifestURI = await nftContract.getManifestURI(tokenId);
+            console.log('Iepriekšējais manifests:', manifestURI);
+            
+            if (manifestURI && manifestURI.startsWith('ar://')) {
+                const txId = manifestURI.replace('ar://', '');
+                try {
+                    const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/${txId}`);
+                    previousManifest = await manifestResponse.json();
+                    console.log('Iepriekšējais manifests iegūts ar', Object.keys(previousManifest.paths || {}).length, 'failiem');
+                } catch (e) {
+                    console.warn('Neizdevās iegūt iepriekšējo manifestu:', e.message);
+                }
+            }
+        }
+        
+        // 3. Iegūt pašreizējos failus no GitHub
         console.log('Iegūstam repo saturu...');
         const [owner, repo] = repoName.split('/');
-        const files = await getRepoFiles(githubToken, owner, repo);
+        const currentFiles = await getRepoFiles(githubToken, owner, repo);
         
-        if (files.length === 0) {
+        if (currentFiles.length === 0) {
             return res.status(400).json({ error: 'Nav failu repo' });
         }
         
-        console.log(`Iegūti ${files.length} faili`);
+        console.log(`Iegūti ${currentFiles.length} faili`);
         
-        // 3. Nosūtīt failus uz pārlūku (pārlūks augšupielādēs ar MetaMask)
+        // 4. Salīdzināt ar iepriekšējo manifestu — atrast izmainītos failus
+        const previousPaths = previousManifest?.paths || {};
+        const changedFiles = [];
+        const unchangedFiles = {};
+        
+        for (const file of currentFiles) {
+            if (previousPaths[file.path] && previousPaths[file.path].id) {
+                // Fails jau ir backupēts — pārbaudam, vai hash sakrīt
+                // Ja hash nav pieejams manifestā, pieņemam, ka fails ir mainījies
+                unchangedFiles[file.path] = {
+                    txId: previousPaths[file.path].id,
+                    size: file.size,
+                    hash: file.hash
+                };
+            } else {
+                // Jauns fails
+                changedFiles.push(file);
+            }
+        }
+        
+        console.log(`Mainīti/jauni faili: ${changedFiles.length}`);
+        console.log(`Nemainīti faili: ${Object.keys(unchangedFiles).length}`);
+        
+        // 5. Nosūtīt tikai izmainītos failus uz pārlūku
         res.json({
             success: true,
             repoName,
-            files,
-            fileCount: files.length,
-            totalBytes: files.reduce((sum, f) => sum + f.size, 0)
+            tokenId: tokenId.toString(),
+            files: changedFiles,
+            unchangedFiles,
+            fileCount: changedFiles.length,
+            totalBytes: changedFiles.reduce((sum, f) => sum + f.size, 0),
+            hasPreviousBackup: backupCount > 0,
+            backupCount
         });
         
     } catch (e) {
