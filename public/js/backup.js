@@ -1,4 +1,6 @@
 import { ethers } from 'ethers';
+import { TurboFactory, OnDemandFunding, ETHToTokenAmount } from '@ardrive/turbo-sdk';
+import { InjectedEthereumSigner } from '@dha-team/arbundles';
 
 let CONFIG = {
     chainId: '0x14a34',
@@ -7,10 +9,8 @@ let CONFIG = {
     subscriptionAddress: ''
 };
 
-let githubToken = null;
-let walletAddress = null;
 let signer = null;
-let currentBackupId = null;
+let userAddress = null;
 let currentRepo = null;
 
 async function init() {
@@ -33,12 +33,21 @@ async function init() {
         showAuthSection();
     }
     
-    // Pārbaudīt, vai ir wallet
+    // Savienot ar MetaMask
     if (window.ethereum) {
-        const provider = new ethers.BrowserProvider(window.ethereum);
-        signer = await provider.getSigner();
-        walletAddress = await signer.getAddress();
-        document.getElementById('walletInput').value = walletAddress;
+        try {
+            await window.ethereum.request({ 
+                method: 'wallet_switchEthereumChain', 
+                params: [{ chainId: CONFIG.chainId }] 
+            });
+            
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            signer = await provider.getSigner();
+            userAddress = await signer.getAddress();
+            document.getElementById('walletInput').value = userAddress;
+        } catch (e) {
+            console.error('MetaMask savienojuma kļūda:', e.message);
+        }
     }
 }
 
@@ -106,7 +115,7 @@ async function checkRepoStatus(repoName) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             repoName,
-            walletAddress
+            walletAddress: userAddress
         })
     });
     
@@ -132,6 +141,7 @@ async function checkRepoStatus(repoName) {
         if (result.hasNFT && result.hasSubscription) {
             backupButton.style.display = 'block';
             backupButton.disabled = false;
+            backupButton.textContent = 'Sākt backupu';
             backupButton.onclick = prepareBackup;
         } else {
             backupButton.style.display = 'none';
@@ -151,22 +161,15 @@ async function prepareBackup() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             repoName: currentRepo,
-            walletAddress
+            walletAddress: userAddress
         })
     });
     
     const result = await response.json();
     
     if (result.success) {
-        currentBackupId = result.backupId;
-        
-        document.getElementById('paymentSection').style.display = 'block';
-        document.getElementById('amountDisplay').textContent = result.costEth + ' ETH';
-        
-        const payButton = document.getElementById('payButton');
-        payButton.onclick = payAndExecute;
-        
-        setStatus('Backups sagatavots! Iemaksā apmaksu.');
+        setStatus('Augšupielādējam Arweave...');
+        await uploadFilesWithMetaMask(result.files, result.repoName);
     } else {
         showError(result.error || 'Kļūda');
         button.disabled = false;
@@ -174,59 +177,99 @@ async function prepareBackup() {
     }
 }
 
-async function payAndExecute() {
-    const button = document.getElementById('payButton');
-    button.disabled = true;
+async function uploadFilesWithMetaMask(files, repoName) {
+    const button = document.getElementById('backupButton');
+    button.textContent = '⏳ Augšupielādē...';
     
     try {
-        setStatus('1/3: Iemaksājam Treasury...');
-        
-        const amount = document.getElementById('amountDisplay').textContent.replace(' ETH', '');
-        
-        const tx = await signer.sendTransaction({
-            to: CONFIG.treasuryAddress,
-            value: ethers.parseEther(amount)
+        // Izveidot Turbo klientu ar MetaMask signer
+        const turbo = TurboFactory.authenticated({
+            signer: new InjectedEthereumSigner({ getSigner: () => signer }),
+            token: 'base-eth',
         });
         
-        setStatus('2/3: Gaida apstiprinājumu...');
-        await tx.wait();
+        const uploadResults = [];
         
-        setStatus('3/3: Izpilda backupu...');
-        
-        const response = await fetch('/api/execute-backup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                backupId: currentBackupId,
-                walletAddress
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            setStatus('✅ Backups veiksmīgs!');
-            document.getElementById('status').textContent = 
-                '✅ Backups pabeigts!\nManifests: ' + result.manifestTxId;
-            button.textContent = '✅ Pabeigts!';
-        } else {
-            showError(result.error || 'Kļūda');
-            button.disabled = false;
-            button.textContent = 'Mēģināt vēlreiz';
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const fileBuffer = Buffer.from(file.content, 'base64');
+            
+            setStatus(`Augšupielādējam ${i + 1}/${files.length}: ${file.path}`);
+            
+            try {
+                const result = await turbo.uploadFile({
+                    fileStreamFactory: () => fileBuffer,
+                    fileSizeFactory: () => fileBuffer.length,
+                    fundingMode: new OnDemandFunding({
+                        maxTokenAmount: ETHToTokenAmount(0.001), // Max 0.001 ETH
+                    }),
+                    dataItemOpts: {
+                        tags: [
+                            { name: 'App-Name', value: 'PermRepo' },
+                            { name: 'Repo', value: repoName },
+                            { name: 'File-Path', value: file.path },
+                            { name: 'Content-Type', value: 'text/plain' },
+                            { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
+                        ]
+                    }
+                });
+                
+                uploadResults.push({
+                    path: file.path,
+                    txId: result.id,
+                    size: file.size,
+                    hash: file.hash
+                });
+                
+                console.log(`[${i + 1}/${files.length}] ✅ ${file.path}: ${result.id}`);
+                
+            } catch (uploadError) {
+                console.error(`[${i + 1}/${files.length}] ❌ ${file.path}:`, uploadError.message);
+                
+                if (uploadError.code === 'ACTION_REJECTED') {
+                    showError('Transakcija atcelta MetaMask');
+                    button.disabled = false;
+                    button.textContent = 'Sākt backupu';
+                    return;
+                }
+                
+                throw uploadError;
+            }
         }
+        
+        // Visi faili augšupielādēti!
+        setStatus('✅ Visi faili augšupielādēti!');
+        button.textContent = '✅ Pabeigts!';
+        
+        document.getElementById('status').textContent = 
+            `✅ Backups veiksmīgs!\n` +
+            `Faili: ${uploadResults.length}\n` +
+            `Kopējais izmērs: ${formatBytes(uploadResults.reduce((sum, f) => sum + f.size, 0))}`;
+        
+        console.log('Upload results:', uploadResults);
         
     } catch (e) {
-        if (e.code === 'ACTION_REJECTED') {
-            showError('Transakcija atcelta');
-        } else {
-            showError(e.message);
-        }
+        console.error('Augšupielādes kļūda:', e.message);
+        showError('Augšupielāde neizdevās: ' + e.message);
         button.disabled = false;
-        button.textContent = 'Iemaksāt un Apstiprināt';
+        button.textContent = 'Sākt backupu';
     }
 }
 
-function setStatus(msg) { document.getElementById('status').textContent = msg; }
-function showError(msg) { document.getElementById('error').textContent = msg; }
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function setStatus(msg) { 
+    document.getElementById('status').textContent = msg; 
+}
+
+function showError(msg) { 
+    document.getElementById('error').textContent = msg; 
+}
 
 init();
