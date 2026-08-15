@@ -13,9 +13,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==========================================
-// KONFIGURĀCIJA NO RENDER MAINĪGAJIEM
-// ==========================================
 const RPC_URL = process.env.RPC_URL;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
@@ -45,11 +42,7 @@ const SUBSCRIPTION_ABI = [
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/modules', express.static(path.join(__dirname, 'node_modules')));
 
-// ==========================================
-// SESIJU KONFIGURĀCIJA ar Upstash Redis
-// ==========================================
 let sessionConfig = {
     secret: SESSION_SECRET,
     resave: false,
@@ -71,7 +64,7 @@ if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
     sessionConfig.store = redisStore;
     console.log('✅ Izmanto Upstash Redis sesiju glabātuvi');
 } else {
-    console.log('⚠️ Izmanto MemoryStore (testam OK, mainnetam vajag Redis)');
+    console.log('⚠️ Izmanto MemoryStore');
 }
 
 app.use(session(sessionConfig));
@@ -83,9 +76,6 @@ function checkApiKey(req, res, next) {
     next();
 }
 
-// ==========================================
-// IEGŪT KONFIGURĀCIJU (priekš frontend)
-// ==========================================
 app.get('/api/config', (req, res) => {
     res.json({
         chainId: CHAIN_ID,
@@ -97,9 +87,6 @@ app.get('/api/config', (req, res) => {
     });
 });
 
-// ==========================================
-// GITHUB OAUTH
-// ==========================================
 app.get('/api/github/login', (req, res) => {
     if (!GITHUB_CLIENT_ID) {
         return res.status(500).json({ error: 'GitHub OAuth nav konfigurēts' });
@@ -173,9 +160,6 @@ app.get('/api/github/user', (req, res) => {
     }
 });
 
-// ==========================================
-// IEGŪT LIETOTĀJA REPOZITORIJUS
-// ==========================================
 app.get('/api/github/repos', checkApiKey, async (req, res) => {
     const githubToken = req.session.githubToken;
     
@@ -209,9 +193,6 @@ app.get('/api/github/repos', checkApiKey, async (req, res) => {
     }
 });
 
-// ==========================================
-// PĀRBAUDĪT REPO STATUSU (NFT un abonements)
-// ==========================================
 app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
@@ -263,9 +244,6 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
     }
 });
 
-// ==========================================
-// SAGATAVOT BACKUPU — inkrementālā loģika
-// ==========================================
 app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
@@ -279,7 +257,6 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         if (!walletAddress) return res.status(400).json({ error: 'Nav wallet adreses' });
         if (!githubToken) return res.status(401).json({ error: 'Nav GitHub autorizācijas' });
         
-        // 1. Pārbaudīt NFT un abonementu
         const provider = new ethers.JsonRpcProvider(RPC_URL);
         const repoHash = ethers.keccak256(
             ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repoName])
@@ -306,7 +283,6 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         
         console.log('NFT un abonements OK, tokenId:', tokenId.toString());
         
-        // 2. Iegūt iepriekšējo manifestu no Arweave (ja ir)
         let previousManifest = null;
         const backupCount = Number(await nftContract.backupCount(tokenId));
         
@@ -326,7 +302,6 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
             }
         }
         
-        // 3. Iegūt pašreizējos failus no GitHub
         console.log('Iegūstam repo saturu...');
         const [owner, repo] = repoName.split('/');
         const currentFiles = await getRepoFiles(githubToken, owner, repo);
@@ -337,7 +312,6 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         
         console.log(`Iegūti ${currentFiles.length} faili`);
         
-        // 4. Salīdzināt ar iepriekšējo manifestu
         const previousPaths = previousManifest?.paths || {};
         const changedFiles = [];
         const unchangedFiles = {};
@@ -357,7 +331,6 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         console.log(`Mainīti/jauni faili: ${changedFiles.length}`);
         console.log(`Nemainīti faili: ${Object.keys(unchangedFiles).length}`);
         
-        // 5. Nosūtīt tikai izmainītos failus
         res.json({
             success: true,
             repoName,
@@ -376,9 +349,6 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
     }
 });
 
-// ==========================================
-// PALĪGFUNKCIJA: IEGŪT REPO FAILUS
-// ==========================================
 async function getRepoFiles(githubToken, owner, repo, path = '') {
     const files = [];
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
@@ -421,9 +391,6 @@ async function getRepoFiles(githubToken, owner, repo, path = '') {
     return files;
 }
 
-// ==========================================
-// VESELĪBAS PĀRBAUDE
-// ==========================================
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -440,7 +407,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Statiskie faili
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'backup.html'));
 });
@@ -448,15 +414,5 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
     console.log('========================================');
     console.log('PermRepo serveris klausās uz porta', PORT);
-    console.log('========================================');
-    console.log('Konfigurācija:');
-    console.log('  RPC_URL:', RPC_URL ? 'IR' : 'NAV');
-    console.log('  NFT_ADDRESS:', NFT_ADDRESS || 'NAV');
-    console.log('  SUBSCRIPTION_ADDRESS:', SUBSCRIPTION_ADDRESS || 'NAV');
-    console.log('  USDC_ADDRESS:', USDC_ADDRESS || 'NAV');
-    console.log('  GITHUB_CLIENT_ID:', GITHUB_CLIENT_ID ? 'IR' : 'NAV');
-    console.log('  GITHUB_CLIENT_SECRET:', GITHUB_CLIENT_SECRET ? 'IR' : 'NAV');
-    console.log('  API_KEY:', API_KEY ? 'IR' : 'NAV');
-    console.log('  UPSTASH_REDIS:', (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) ? 'IR' : 'NAV');
     console.log('========================================');
 });
