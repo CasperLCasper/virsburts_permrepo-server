@@ -11,13 +11,16 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ==========================================
+// KONFIGURĀCIJA NO RENDER MAINĪGAJIEM
+// ==========================================
 const RPC_URL = process.env.RPC_URL;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
+const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 const USDC_ADDRESS = process.env.USDC_ADDRESS;
 const ARWEAVE_GATEWAY = process.env.ARWEAVE_GATEWAY || 'https://ar-io.dev';
 const CHAIN_ID = process.env.CHAIN_ID || '0x14a34';
-const API_KEY = process.env.API_KEY || '';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI;
@@ -26,7 +29,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
     "function ownerOf(uint256 tokenId) external view returns (address)",
-    "function backupCount(uint256 tokenId) external view returns (uint256)",
+    "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
     "function getNonce(uint256 tokenId) external view returns (uint256)"
 ];
@@ -35,10 +38,15 @@ const SUBSCRIPTION_ABI = [
     "function isSubscribed(uint256 tokenId) external view returns (bool)"
 ];
 
+const REGISTRY_ABI = [
+    "function canBackup(uint256 nftTokenId) external view returns (bool)",
+    "function verifyOwnership(uint256 nftTokenId) external view returns (address)",
+    "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)"
+];
+
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/modules', express.static(path.join(__dirname, 'node_modules')));
 
 app.use(session({
     secret: SESSION_SECRET,
@@ -47,24 +55,24 @@ app.use(session({
     cookie: { secure: false, maxAge: 3600000 }
 }));
 
-function checkApiKey(req, res, next) {
-    if (API_KEY && req.headers['x-api-key'] !== API_KEY) {
-        return res.status(401).json({ error: 'Nederīga API atslēga' });
-    }
-    next();
-}
-
+// ==========================================
+// IEGŪT KONFIGURĀCIJU (priekš frontend)
+// ==========================================
 app.get('/api/config', (req, res) => {
     res.json({
         chainId: CHAIN_ID,
         nftAddress: NFT_ADDRESS,
         subscriptionAddress: SUBSCRIPTION_ADDRESS,
+        registryAddress: REGISTRY_ADDRESS,
         usdcAddress: USDC_ADDRESS,
         rpcUrl: RPC_URL,
         arweaveGateway: ARWEAVE_GATEWAY
     });
 });
 
+// ==========================================
+// GITHUB OAUTH
+// ==========================================
 app.get('/api/github/login', (req, res) => {
     if (!GITHUB_CLIENT_ID) {
         return res.status(500).json({ error: 'GitHub OAuth nav konfigurēts' });
@@ -138,7 +146,10 @@ app.get('/api/github/user', (req, res) => {
     }
 });
 
-app.get('/api/github/repos', checkApiKey, async (req, res) => {
+// ==========================================
+// IEGŪT LIETOTĀJA REPOZITORIJUS
+// ==========================================
+app.get('/api/github/repos', async (req, res) => {
     const githubToken = req.session.githubToken;
     
     if (!githubToken) {
@@ -171,7 +182,10 @@ app.get('/api/github/repos', checkApiKey, async (req, res) => {
     }
 });
 
-app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
+// ==========================================
+// PĀRBAUDĪT REPO STATUSU (NFT, abonements, reģistrācija)
+// ==========================================
+app.post('/api/check-repo-status', async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
         
@@ -189,6 +203,7 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
         
         let hasNFT = false;
         let hasSubscription = false;
+        let isRegistered = false;
         let backupCount = 0;
         let lastManifestURI = '';
         
@@ -203,14 +218,23 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
             const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, provider);
             hasSubscription = await subscriptionContract.isSubscribed(tokenId);
             
-            backupCount = Number(await nftContract.backupCount(tokenId));
+            backupCount = Number(await nftContract.getBackupCount(tokenId));
             lastManifestURI = await nftContract.getManifestURI(tokenId);
+            
+            const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
+            try {
+                isRegistered = await registryContract.canBackup(tokenId);
+            } catch (e) {
+                console.warn('Registry pārbaudes kļūda:', e.message);
+                isRegistered = false;
+            }
         }
         
         res.json({
             success: true,
             hasNFT,
             hasSubscription,
+            isRegistered,
             tokenId: hasNFT ? tokenId.toString() : '0',
             backupCount,
             lastManifestURI
@@ -222,7 +246,10 @@ app.post('/api/check-repo-status', checkApiKey, async (req, res) => {
     }
 });
 
-app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
+// ==========================================
+// SAGATAVOT BACKUPU — inkrementālā loģika
+// ==========================================
+app.post('/api/prepare-backup', async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
         const githubToken = req.session.githubToken;
@@ -259,10 +286,17 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
             return res.status(400).json({ error: 'Nav aktīva abonementa' });
         }
         
-        console.log('NFT un abonements OK, tokenId:', tokenId.toString());
+        const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
+        const canBackup = await registryContract.canBackup(tokenId);
+        
+        if (!canBackup) {
+            return res.status(400).json({ error: 'Repo nav reģistrēts Registry' });
+        }
+        
+        console.log('NFT, abonements un reģistrācija OK, tokenId:', tokenId.toString());
         
         let previousManifest = null;
-        const backupCount = Number(await nftContract.backupCount(tokenId));
+        const backupCount = Number(await nftContract.getBackupCount(tokenId));
         
         if (backupCount > 0) {
             const manifestURI = await nftContract.getManifestURI(tokenId);
@@ -327,6 +361,9 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
     }
 });
 
+// ==========================================
+// PALĪGFUNKCIJA: IEGŪT REPO FAILUS
+// ==========================================
 async function getRepoFiles(githubToken, owner, repo, path = '') {
     const files = [];
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
@@ -369,6 +406,9 @@ async function getRepoFiles(githubToken, owner, repo, path = '') {
     return files;
 }
 
+// ==========================================
+// VESELĪBAS PĀRBAUDE
+// ==========================================
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -377,13 +417,14 @@ app.get('/api/health', (req, res) => {
             rpc: !!RPC_URL,
             nft: !!NFT_ADDRESS,
             subscription: !!SUBSCRIPTION_ADDRESS,
+            registry: !!REGISTRY_ADDRESS,
             usdc: !!USDC_ADDRESS,
-            apiKey: !!API_KEY,
             githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET)
         }
     });
 });
 
+// Statiskie faili
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'backup.html'));
 });
@@ -391,5 +432,14 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
     console.log('========================================');
     console.log('PermRepo serveris klausās uz porta', PORT);
+    console.log('========================================');
+    console.log('Konfigurācija:');
+    console.log('  RPC_URL:', RPC_URL ? 'IR' : 'NAV');
+    console.log('  NFT_ADDRESS:', NFT_ADDRESS || 'NAV');
+    console.log('  SUBSCRIPTION_ADDRESS:', SUBSCRIPTION_ADDRESS || 'NAV');
+    console.log('  REGISTRY_ADDRESS:', REGISTRY_ADDRESS || 'NAV');
+    console.log('  USDC_ADDRESS:', USDC_ADDRESS || 'NAV');
+    console.log('  GITHUB_CLIENT_ID:', GITHUB_CLIENT_ID ? 'IR' : 'NAV');
+    console.log('  GITHUB_CLIENT_SECRET:', GITHUB_CLIENT_SECRET ? 'IR' : 'NAV');
     console.log('========================================');
 });
