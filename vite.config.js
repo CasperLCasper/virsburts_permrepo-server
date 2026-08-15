@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import nodePolyfills from '@esbuild-plugins/node-modules-polyfill';
+import { nodePolyfills } from '@esbuild-plugins/node-modules-polyfill';
 
 export default defineConfig({
     plugins: [
