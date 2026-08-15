@@ -1,16 +1,12 @@
 {
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "build": "vite build"
+    "start": "node server.js"
   },
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.42.0",
-    "@dha-team/arbundles": "^1.0.0",
     "ethers": "^6.13.2",
     "express": "^4.19.2",
-    "express-session": "^1.18.0",
-    "vite": "^6.0.0",
-    "vite-plugin-node-polyfills": "^0.23.0"
+    "express-session": "^1.18.0"
   }
 }
