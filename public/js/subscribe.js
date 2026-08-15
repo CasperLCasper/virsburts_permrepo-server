@@ -1,10 +1,6 @@
 const { ethers } = window;
 
-const CHAIN_ID = '0x14a34';
-
-const SUBSCRIPTION_ADDRESS = '0x29f1ed42C6C2E157B7571f9585a9C9Dd6fBcda51';
-const NFT_ADDRESS = '0xeD3eB455cAeb057a034d7bE2368cdCEA37Faa1d4';
-const USDC_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+let CONFIG = {};
 
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)"
@@ -16,8 +12,7 @@ const SUBSCRIPTION_ABI = [
 ];
 
 const USDC_ABI = [
-    "function approve(address spender, uint256 amount) external returns (bool)",
-    "function allowance(address owner, address spender) external view returns (uint256)"
+    "function approve(address spender, uint256 amount) external returns (bool)"
 ];
 
 const params = new URLSearchParams(window.location.search);
@@ -27,6 +22,15 @@ let signer;
 let userAddress;
 
 async function init() {
+    try {
+        const configResponse = await fetch('/api/config');
+        CONFIG = await configResponse.json();
+    } catch (e) {
+        console.error('Neizdevās iegūt konfigurāciju:', e.message);
+        showError('Neizdevās iegūt konfigurāciju');
+        return;
+    }
+    
     document.getElementById('repoInput').value = repoFromUrl;
     
     if (!window.ethereum) {
@@ -37,7 +41,7 @@ async function init() {
     try {
         await window.ethereum.request({ 
             method: 'wallet_switchEthereumChain', 
-            params: [{ chainId: CHAIN_ID }] 
+            params: [{ chainId: CONFIG.chainId }] 
         });
         
         const provider = new ethers.BrowserProvider(window.ethereum);
@@ -74,7 +78,7 @@ async function subscribe() {
             ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repo])
         );
         
-        const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
+        const nftContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
         const tokenId = await nftContract.repositoryTokens(repoHash);
         
         if (tokenId === 0n || tokenId === 0) {
@@ -87,14 +91,14 @@ async function subscribe() {
         setStatus('2/4: Apstiprina USDC atļauju...');
         button.textContent = '⏳ USDC...';
         
-        const usdcContract = new ethers.Contract(USDC_ADDRESS, USDC_ABI, signer);
-        const approveTx = await usdcContract.approve(SUBSCRIPTION_ADDRESS, 2000000);
+        const usdcContract = new ethers.Contract(CONFIG.usdcAddress, USDC_ABI, signer);
+        const approveTx = await usdcContract.approve(CONFIG.subscriptionAddress, 2000000);
         await approveTx.wait();
         
         setStatus('3/4: Pērk abonementu...');
         button.textContent = '⏳ Pērk...';
         
-        const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, signer);
+        const subscriptionContract = new ethers.Contract(CONFIG.subscriptionAddress, SUBSCRIPTION_ABI, signer);
         const subscribeTx = await subscriptionContract.subscribe(tokenId);
         await subscribeTx.wait();
         
