@@ -19,7 +19,9 @@ const PORT = process.env.PORT || 3000;
 const RPC_URL = process.env.RPC_URL;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
+const USDC_ADDRESS = process.env.USDC_ADDRESS;
 const ARWEAVE_GATEWAY = process.env.ARWEAVE_GATEWAY || 'https://ar-io.dev';
+const CHAIN_ID = process.env.CHAIN_ID || '0x14a34';
 const API_KEY = process.env.API_KEY || '';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
@@ -85,9 +87,10 @@ function checkApiKey(req, res, next) {
 // ==========================================
 app.get('/api/config', (req, res) => {
     res.json({
-        chainId: '0x14a34',
+        chainId: CHAIN_ID,
         nftAddress: NFT_ADDRESS,
         subscriptionAddress: SUBSCRIPTION_ADDRESS,
+        usdcAddress: USDC_ADDRESS,
         rpcUrl: RPC_URL,
         arweaveGateway: ARWEAVE_GATEWAY
     });
@@ -333,7 +336,7 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         
         console.log(`Iegūti ${currentFiles.length} faili`);
         
-        // 4. Salīdzināt ar iepriekšējo manifestu — atrast izmainītos failus
+        // 4. Salīdzināt ar iepriekšējo manifestu
         const previousPaths = previousManifest?.paths || {};
         const changedFiles = [];
         const unchangedFiles = {};
@@ -353,7 +356,7 @@ app.post('/api/prepare-backup', checkApiKey, async (req, res) => {
         console.log(`Mainīti/jauni faili: ${changedFiles.length}`);
         console.log(`Nemainīti faili: ${Object.keys(unchangedFiles).length}`);
         
-        // 5. Nosūtīt tikai izmainītos failus uz pārlūku
+        // 5. Nosūtīt tikai izmainītos failus
         res.json({
             success: true,
             repoName,
@@ -428,6 +431,7 @@ app.get('/api/health', (req, res) => {
             rpc: !!RPC_URL,
             nft: !!NFT_ADDRESS,
             subscription: !!SUBSCRIPTION_ADDRESS,
+            usdc: !!USDC_ADDRESS,
             apiKey: !!API_KEY,
             githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET),
             upstashRedis: !!(UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN)
@@ -448,6 +452,7 @@ app.listen(PORT, () => {
     console.log('  RPC_URL:', RPC_URL ? 'IR' : 'NAV');
     console.log('  NFT_ADDRESS:', NFT_ADDRESS || 'NAV');
     console.log('  SUBSCRIPTION_ADDRESS:', SUBSCRIPTION_ADDRESS || 'NAV');
+    console.log('  USDC_ADDRESS:', USDC_ADDRESS || 'NAV');
     console.log('  GITHUB_CLIENT_ID:', GITHUB_CLIENT_ID ? 'IR' : 'NAV');
     console.log('  GITHUB_CLIENT_SECRET:', GITHUB_CLIENT_SECRET ? 'IR' : 'NAV');
     console.log('  API_KEY:', API_KEY ? 'IR' : 'NAV');
