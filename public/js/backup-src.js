@@ -156,13 +156,17 @@ async function checkRepoStatus(repoName) {
         
         const backupButton = document.getElementById('backupButton');
         
-        if (result.hasNFT && result.hasSubscription) {
+        if (result.hasNFT && result.hasSubscription && result.isRegistered) {
             backupButton.style.display = 'block';
             backupButton.disabled = false;
             backupButton.textContent = 'Sākt backupu';
             backupButton.onclick = prepareBackup;
         } else {
             backupButton.style.display = 'none';
+            
+            if (result.hasNFT && result.hasSubscription && !result.isRegistered) {
+                setStatus('❌ Repo nav reģistrēts — <a href="/register.html?repo=' + encodeURIComponent(repoName) + '">Reģistrēt repo</a>');
+            }
         }
     } else {
         showError(result.error || 'Kļūda');
