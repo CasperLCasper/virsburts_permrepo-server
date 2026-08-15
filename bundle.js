@@ -9,18 +9,18 @@ try {
         format: 'esm',
         platform: 'browser',
         outfile: 'public/js/backup-bundle.js',
+        alias: {
+            'fs': false,
+            'path': false,
+            'crypto': false,
+            'stream': false,
+            'buffer': false,
+            'node:stream': false
+        },
         define: {
             'process.env.NODE_ENV': '"production"',
             'global': 'window'
-        },
-        plugins: [{
-            name: 'node-polyfills',
-            setup(build) {
-                build.onResolve({ filter: /^(buffer|crypto|stream|process|path)$/ }, args => {
-                    return { path: args.path, namespace: 'polyfill' };
-                });
-            }
-        }]
+        }
     });
     
     console.log('✅ Bundle izveidots: public/js/backup-bundle.js');
