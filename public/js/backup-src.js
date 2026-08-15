@@ -1,7 +1,7 @@
 const { ethers } = window;
 
-import { TurboFactory, OnDemandFunding, ETHToTokenAmount } from '@ardrive/turbo-sdk';
-import { InjectedEthereumSigner } from '@dha-team/arbundles';
+import { TurboFactory, OnDemandFunding, ETHToTokenAmount } from '@ardrive/turbo-sdk/web';
+import { InjectedEthereumSigner } from '@dha-team/arbundles/web';
 
 let CONFIG = {};
 let userAddress = null;
