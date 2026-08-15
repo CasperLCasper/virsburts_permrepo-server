@@ -10,12 +10,12 @@ try {
         platform: 'browser',
         outfile: 'public/js/backup-bundle.js',
         alias: {
-            'fs': false,
-            'path': false,
-            'crypto': false,
-            'stream': false,
-            'buffer': false,
-            'node:stream': false
+            'fs': 'empty',
+            'path': 'empty',
+            'crypto': 'empty',
+            'stream': 'empty',
+            'buffer': 'empty',
+            'node:stream': 'empty'
         },
         define: {
             'process.env.NODE_ENV': '"production"',
