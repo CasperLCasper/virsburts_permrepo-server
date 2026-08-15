@@ -4,8 +4,6 @@ import { fileURLToPath } from 'url';
 import { ethers } from 'ethers';
 import crypto from 'crypto';
 import session from 'express-session';
-import { Redis } from '@upstash/redis';
-import { RedisStore } from 'connect-redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,8 +22,6 @@ const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
@@ -42,32 +38,14 @@ const SUBSCRIPTION_ABI = [
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/modules', express.static(path.join(__dirname, 'node_modules')));
 
-let sessionConfig = {
+app.use(session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: true,
     cookie: { secure: false, maxAge: 3600000 }
-};
-
-if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
-    const redis = new Redis({
-        url: UPSTASH_REDIS_REST_URL,
-        token: UPSTASH_REDIS_REST_TOKEN,
-    });
-    
-    const redisStore = new RedisStore({
-        client: redis,
-        prefix: 'permrepo:',
-    });
-    
-    sessionConfig.store = redisStore;
-    console.log('✅ Izmanto Upstash Redis sesiju glabātuvi');
-} else {
-    console.log('⚠️ Izmanto MemoryStore');
-}
-
-app.use(session(sessionConfig));
+}));
 
 function checkApiKey(req, res, next) {
     if (API_KEY && req.headers['x-api-key'] !== API_KEY) {
@@ -401,8 +379,7 @@ app.get('/api/health', (req, res) => {
             subscription: !!SUBSCRIPTION_ADDRESS,
             usdc: !!USDC_ADDRESS,
             apiKey: !!API_KEY,
-            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET),
-            upstashRedis: !!(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN)
+            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET)
         }
     });
 });
