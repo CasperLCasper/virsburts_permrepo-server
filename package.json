@@ -4,18 +4,15 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "build": "esbuild public/js/backup.js --bundle --outfile=public/js/backup.bundle.js --format=esm --platform=browser",
-    "postinstall": "npm run build"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@ardrive/turbo-sdk": "^1.11.0",
+    "@ardrive/turbo-sdk": "^1.42.0",
     "@dha-team/arbundles": "^1.1.0",
     "dotenv": "^16.4.5",
-    "esbuild": "^0.20.2",
     "express": "^4.19.2",
     "express-session": "^1.18.0"
   }
