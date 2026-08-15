@@ -1,17 +1,9 @@
 import { defineConfig } from 'vite';
-import polyfillPkg from '@esbuild-plugins/node-modules-polyfill';
-
-const { nodePolyfills } = polyfillPkg;
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 export default defineConfig({
     plugins: [
-        nodePolyfills({
-            globals: {
-                Buffer: true,
-                global: true,
-                process: true,
-            }
-        })
+        nodePolyfills()
     ],
     build: {
         outDir: 'dist',
