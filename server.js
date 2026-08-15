@@ -45,6 +45,7 @@ const SUBSCRIPTION_ABI = [
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/modules', express.static(path.join(__dirname, 'node_modules')));
 
 // ==========================================
 // SESIJU KONFIGURĀCIJA ar Upstash Redis
