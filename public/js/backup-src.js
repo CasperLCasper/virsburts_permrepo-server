@@ -165,7 +165,8 @@ async function checkRepoStatus(repoName) {
             backupButton.style.display = 'none';
             
             if (result.hasNFT && result.hasSubscription && !result.isRegistered) {
-                setStatus('❌ Repo nav reģistrēts — <a href="/register.html?repo=' + encodeURIComponent(repoName) + '">Reģistrēt repo</a>');
+                document.getElementById('status').innerHTML = 
+                    '❌ Repo nav reģistrēts — <a href="/register.html?repo=' + encodeURIComponent(repoName) + '">Reģistrēt repo</a>';
             }
         }
     } else {
@@ -335,10 +336,10 @@ async function uploadFilesWithMetaMask(files, repoName, tokenId) {
         setStatus('✅ Backups veiksmīgi pabeigts!');
         button.textContent = '✅ Pabeigts!';
         
-        document.getElementById('status').textContent = 
-            `✅ Backups veiksmīgs!\n` +
-            `Faili: ${uploadResults.length} jauni + ${Object.keys(currentUnchangedFiles).length} nemainīti\n` +
-            `Manifests: ar://${manifestTxId}\n` +
+        document.getElementById('status').innerHTML = 
+            `✅ Backups veiksmīgs!<br>` +
+            `Faili: ${uploadResults.length} jauni + ${Object.keys(currentUnchangedFiles).length} nemainīti<br>` +
+            `Manifests: ar://${manifestTxId}<br>` +
             `Merkle Root: ${merkleRoot.substring(0, 20)}...`;
         
     } catch (e) {
@@ -452,7 +453,7 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
 }
 
 function setStatus(msg) { 
-    document.getElementById('status').textContent = msg; 
+    document.getElementById('status').innerHTML = msg; 
 }
 
 function showError(msg) { 
