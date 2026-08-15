@@ -4,17 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PermRepo — Backups</title>
-    
-    <!-- Import Map, kas izmanto jsDelivr ESM stabilai Web3 paku ielādei -->
-    <script type="importmap">
-    {
-      "imports": {
-        "@ardrive/turbo-sdk": "https://cdn.jsdelivr.net/npm/@ardrive/turbo-sdk@1.42.0/lib/esm/web/index.js/+esm",
-        "@dha-team/arbundles": "https://cdn.jsdelivr.net/npm/@dha-team/arbundles@1.0.4/build/web/esm/webIndex.js/+esm"
-      }
-    }
-    </script>
-    
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -63,24 +52,7 @@
     <div class="status" id="status"></div>
     <div class="error" id="error"></div>
 </div>
-
-<!-- Ethers.js ielāde -->
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
-
-<!-- Node.js vides mainīgo polifili (nepieciešami Web3 rīkiem) -->
-<script>
-    window.global = window;
-    window.process = { env: {} };
-</script>
-
-<!-- Buffer polifils (nepieciešams kriptogrāfijai un failu apstrādei) -->
-<script type="module">
-    import { Buffer } from 'https://esm.sh/buffer';
-    window.Buffer = Buffer;
-</script>
-
-<!-- Tavs galvenais JavaScript fails -->
-<script type="module" src="js/backup.js"></script>
-
+<script type="module" src="js/backup-bundle.js"></script>
 </body>
 </html>
