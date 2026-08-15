@@ -314,6 +314,22 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         const totalBytes = changedFiles.reduce((sum, f) => sum + f.size, 0);
         
+        if (totalBytes === 0) {
+            return res.json({
+                success: true,
+                repoName,
+                tokenId: tokenId.toString(),
+                files: [],
+                unchangedFiles,
+                fileCount: 0,
+                totalBytes: 0,
+                costEth: '0',
+                hasPreviousBackup: backupCount > 0,
+                backupCount,
+                message: 'Nav izmaiņu'
+            });
+        }
+        
         const turbo = TurboFactory.authenticated({
             privateKey: OPERATOR_PRIVATE_KEY,
             token: 'base-eth',
