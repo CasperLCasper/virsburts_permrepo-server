@@ -1,7 +1,6 @@
 const { ethers } = window;
 
-const CHAIN_ID = '0x14a34';
-const NFT_ADDRESS = '0xeD3eB455cAeb057a034d7bE2368cdCEA37Faa1d4';
+let CONFIG = {};
 
 const NFT_ABI = [
     "function mintRepository(address recipient, string calldata repository, bool privateRepo) external returns (uint256)",
@@ -15,6 +14,15 @@ let signer;
 let userAddress;
 
 async function init() {
+    try {
+        const configResponse = await fetch('/api/config');
+        CONFIG = await configResponse.json();
+    } catch (e) {
+        console.error('Neizdevās iegūt konfigurāciju:', e.message);
+        showError('Neizdevās iegūt konfigurāciju');
+        return;
+    }
+    
     document.getElementById('repoInput').value = repoFromUrl;
     
     if (!window.ethereum) {
@@ -25,7 +33,7 @@ async function init() {
     try {
         await window.ethereum.request({ 
             method: 'wallet_switchEthereumChain', 
-            params: [{ chainId: CHAIN_ID }] 
+            params: [{ chainId: CONFIG.chainId }] 
         });
         
         const provider = new ethers.BrowserProvider(window.ethereum);
@@ -63,7 +71,7 @@ async function mintNFT() {
             ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repo])
         );
         
-        const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
+        const nftContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
         const tokenId = await nftContract.repositoryTokens(repoHash);
         
         if (tokenId !== 0n && tokenId !== 0) {
@@ -76,7 +84,7 @@ async function mintNFT() {
         setStatus('2/3: Gaida transakcijas apstiprinājumu...');
         button.textContent = '⏳ Gaida...';
         
-        const signerContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, signer);
+        const signerContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, signer);
         const tx = await signerContract.mintRepository(userAddress, repo, false);
         await tx.wait();
         
