@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { ethers } from 'ethers';
 import crypto from 'crypto';
 import session from 'express-session';
+import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,10 +13,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const RPC_URL = process.env.RPC_URL;
+const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY;
+const TREASURY_ADDRESS = process.env.TREASURY_ADDRESS;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
-const USDC_ADDRESS = process.env.USDC_ADDRESS;
 const ARWEAVE_GATEWAY = process.env.ARWEAVE_GATEWAY || 'https://ar-io.dev';
 const CHAIN_ID = process.env.CHAIN_ID || '0x14a34';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
@@ -36,14 +38,17 @@ const SUBSCRIPTION_ABI = [
 ];
 
 const REGISTRY_ABI = [
-    "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)",
-    "function verifyOwnership(uint256 nftTokenId) external view returns (address)"
+    "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)"
+];
+
+const TREASURY_ABI = [
+    "function payTurbo(uint256 amount, bytes32 paymentId) external",
+    "function balance() external view returns (uint256)"
 ];
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/dist', express.static(path.join(__dirname, 'dist')));
 
 app.use(session({
     secret: SESSION_SECRET,
@@ -55,10 +60,10 @@ app.use(session({
 app.get('/api/config', (req, res) => {
     res.json({
         chainId: CHAIN_ID,
+        treasuryAddress: TREASURY_ADDRESS,
         nftAddress: NFT_ADDRESS,
         subscriptionAddress: SUBSCRIPTION_ADDRESS,
         registryAddress: REGISTRY_ADDRESS,
-        usdcAddress: USDC_ADDRESS,
         rpcUrl: RPC_URL,
         arweaveGateway: ARWEAVE_GATEWAY
     });
@@ -127,11 +132,7 @@ app.get('/api/github/logout', (req, res) => {
 
 app.get('/api/github/user', (req, res) => {
     if (req.session.githubUser) {
-        res.json({
-            success: true,
-            user: req.session.githubUser,
-            avatar: req.session.githubAvatar
-        });
+        res.json({ success: true, user: req.session.githubUser });
     } else {
         res.json({ success: false });
     }
@@ -237,10 +238,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         const { repoName, walletAddress } = req.body;
         const githubToken = req.session.githubToken;
         
-        console.log('\n=== BACKUP SAGATAVOŠANA ===');
-        console.log('Repo:', repoName);
-        console.log('Wallet:', walletAddress);
-        
         if (!repoName) return res.status(400).json({ error: 'Nav repo nosaukuma' });
         if (!walletAddress) return res.status(400).json({ error: 'Nav wallet adreses' });
         if (!githubToken) return res.status(401).json({ error: 'Nav GitHub autorizācijas' });
@@ -276,36 +273,28 @@ app.post('/api/prepare-backup', async (req, res) => {
             return res.status(400).json({ error: 'Repo nav reģistrēts Registry' });
         }
         
-        console.log('NFT, abonements un reģistrācija OK, tokenId:', tokenId.toString());
-        
         let previousManifest = null;
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         
         if (backupCount > 0) {
             const manifestURI = await nftContract.getManifestURI(tokenId);
-            console.log('Iepriekšējais manifests:', manifestURI);
-            
             if (manifestURI && manifestURI.startsWith('ar://')) {
                 const txId = manifestURI.replace('ar://', '');
                 try {
                     const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/${txId}`);
                     previousManifest = await manifestResponse.json();
-                    console.log('Iepriekšējais manifests iegūts ar', Object.keys(previousManifest.paths || {}).length, 'failiem');
                 } catch (e) {
                     console.warn('Neizdevās iegūt iepriekšējo manifestu:', e.message);
                 }
             }
         }
         
-        console.log('Iegūstam repo saturu...');
         const [owner, repo] = repoName.split('/');
         const currentFiles = await getRepoFiles(githubToken, owner, repo);
         
         if (currentFiles.length === 0) {
             return res.status(400).json({ error: 'Nav failu repo' });
         }
-        
-        console.log(`Iegūti ${currentFiles.length} faili`);
         
         const previousPaths = previousManifest?.paths || {};
         const changedFiles = [];
@@ -323,8 +312,18 @@ app.post('/api/prepare-backup', async (req, res) => {
             }
         }
         
-        console.log(`Mainīti/jauni faili: ${changedFiles.length}`);
-        console.log(`Nemainīti faili: ${Object.keys(unchangedFiles).length}`);
+        const totalBytes = changedFiles.reduce((sum, f) => sum + f.size, 0);
+        
+        const turbo = TurboFactory.authenticated({
+            privateKey: OPERATOR_PRIVATE_KEY,
+            token: 'base-eth',
+            uploadServiceConfig: { url: 'https://upload.services.ar-io.dev' },
+            paymentServiceConfig: { url: 'https://payment.services.ar-io.dev' }
+        });
+        
+        const costs = await turbo.getUploadCosts({ bytes: [totalBytes] });
+        const costInfo = costs[0];
+        const costEth = ethers.formatEther(costInfo.tokenAmount.toString());
         
         res.json({
             success: true,
@@ -333,13 +332,119 @@ app.post('/api/prepare-backup', async (req, res) => {
             files: changedFiles,
             unchangedFiles,
             fileCount: changedFiles.length,
-            totalBytes: changedFiles.reduce((sum, f) => sum + f.size, 0),
+            totalBytes,
+            costEth,
             hasPreviousBackup: backupCount > 0,
             backupCount
         });
         
     } catch (e) {
         console.error('Backup sagatavošanas kļūda:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/execute-backup', async (req, res) => {
+    try {
+        const { repoName, files, unchangedFiles, tokenId, costEth, walletAddress } = req.body;
+        
+        const provider = new ethers.JsonRpcProvider(RPC_URL);
+        const operatorWallet = new ethers.Wallet(OPERATOR_PRIVATE_KEY, provider);
+        
+        const treasuryContract = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, provider);
+        const treasuryBalance = await treasuryContract.balance();
+        const costWei = ethers.parseEther(costEth);
+        
+        if (treasuryBalance < costWei) {
+            return res.status(400).json({ error: 'Treasury nav pietiekami līdzekļu' });
+        }
+        
+        const paymentId = ethers.id(repoName + Date.now().toString());
+        const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+        const payTx = await treasuryWrite.payTurbo(costWei, paymentId);
+        await payTx.wait();
+        
+        const signer = new EthereumSigner(OPERATOR_PRIVATE_KEY);
+        const turbo = TurboFactory.authenticated({
+            signer,
+            token: 'base-eth',
+            uploadServiceConfig: { url: 'https://upload.services.ar-io.dev' },
+            paymentServiceConfig: { url: 'https://payment.services.ar-io.dev' }
+        });
+        
+        await turbo.topUpWithTokens({ tokenAmount: costEth });
+        
+        const uploadResults = [];
+        
+        for (const file of files) {
+            const fileBuffer = Buffer.from(file.content, 'base64');
+            
+            const result = await turbo.uploadFile({
+                fileStreamFactory: () => fileBuffer,
+                fileSizeFactory: () => fileBuffer.length,
+                dataItemOpts: {
+                    tags: [
+                        { name: 'App-Name', value: 'PermRepo' },
+                        { name: 'Repo', value: repoName },
+                        { name: 'File-Path', value: file.path },
+                        { name: 'Content-Type', value: 'text/plain' },
+                        { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
+                    ]
+                }
+            });
+            
+            uploadResults.push({
+                path: file.path,
+                txId: result.id,
+                size: file.size,
+                hash: file.hash
+            });
+        }
+        
+        const manifest = {
+            manifest: 'arweave/paths',
+            version: '0.2.0',
+            index: { path: 'README.md' },
+            paths: {},
+            metadata: {
+                repo: repoName,
+                timestamp: new Date().toISOString(),
+                generatedBy: 'PermRepo v1.0.0'
+            }
+        };
+        
+        for (const f of uploadResults) {
+            manifest.paths[f.path] = { id: f.txId };
+        }
+        
+        for (const [fp, info] of Object.entries(unchangedFiles)) {
+            manifest.paths[fp] = { id: info.txId };
+        }
+        
+        const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf-8');
+        const manifestResult = await turbo.uploadFile({
+            fileStreamFactory: () => manifestBuffer,
+            fileSizeFactory: () => manifestBuffer.length,
+            dataItemOpts: {
+                tags: [
+                    { name: 'App-Name', value: 'PermRepo' },
+                    { name: 'Type', value: 'path-manifest' },
+                    { name: 'Repo', value: repoName },
+                    { name: 'Content-Type', value: 'application/x.arweave-manifest+json' },
+                    { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
+                ]
+            }
+        });
+        
+        res.json({
+            success: true,
+            manifestTxId: manifestResult.id,
+            uploadedFiles: uploadResults,
+            costEth
+        });
+        
+    } catch (e) {
+        console.error('Backup izpildes kļūda:', e.message);
         res.status(500).json({ error: e.message });
     }
 });
@@ -365,9 +470,7 @@ async function getRepoFiles(githubToken, owner, repo, path = '') {
         if (item.type === 'file') {
             if (item.size <= 104857600) {
                 const fileResponse = await fetch(item.download_url, {
-                    headers: {
-                        'Authorization': `Bearer ${githubToken}`
-                    }
+                    headers: { 'Authorization': `Bearer ${githubToken}` }
                 });
                 const fileBuffer = await fileResponse.arrayBuffer();
                 files.push({
@@ -389,13 +492,13 @@ async function getRepoFiles(githubToken, owner, repo, path = '') {
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
-        timestamp: new Date().toISOString(),
         configured: {
             rpc: !!RPC_URL,
+            operatorKey: !!OPERATOR_PRIVATE_KEY,
+            treasury: !!TREASURY_ADDRESS,
             nft: !!NFT_ADDRESS,
             subscription: !!SUBSCRIPTION_ADDRESS,
             registry: !!REGISTRY_ADDRESS,
-            usdc: !!USDC_ADDRESS,
             githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET)
         }
     });
@@ -409,13 +512,7 @@ app.listen(PORT, () => {
     console.log('========================================');
     console.log('PermRepo serveris klausās uz porta', PORT);
     console.log('========================================');
-    console.log('Konfigurācija:');
-    console.log('  RPC_URL:', RPC_URL ? 'IR' : 'NAV');
-    console.log('  NFT_ADDRESS:', NFT_ADDRESS || 'NAV');
-    console.log('  SUBSCRIPTION_ADDRESS:', SUBSCRIPTION_ADDRESS || 'NAV');
-    console.log('  REGISTRY_ADDRESS:', REGISTRY_ADDRESS || 'NAV');
-    console.log('  USDC_ADDRESS:', USDC_ADDRESS || 'NAV');
-    console.log('  GITHUB_CLIENT_ID:', GITHUB_CLIENT_ID ? 'IR' : 'NAV');
-    console.log('  GITHUB_CLIENT_SECRET:', GITHUB_CLIENT_SECRET ? 'IR' : 'NAV');
+    console.log('  OPERATOR_PRIVATE_KEY:', OPERATOR_PRIVATE_KEY ? 'IR' : 'NAV');
+    console.log('  TREASURY_ADDRESS:', TREASURY_ADDRESS || 'NAV');
     console.log('========================================');
 });
