@@ -1,3 +1,5 @@
+const { ethers } = window;
+
 let CONFIG = {};
 let userAddress = null;
 
@@ -91,7 +93,6 @@ async function connectWallet() {
         document.getElementById('walletInput').value = userAddress;
         setStatus('Maks savienots: ' + userAddress.substring(0, 10) + '...');
         
-        // Ja repo jau izvēlēts, pārbaudīt statusu
         const select = document.getElementById('repoSelect');
         if (select.value) {
             await checkRepoStatus(select.value);
@@ -164,7 +165,6 @@ function showError(msg) {
 
 init();
 
-// Pievieno connectWalletButton notikumu
 document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('connectWalletButton').onclick = connectWallet;
 });
