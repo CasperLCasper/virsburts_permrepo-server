@@ -1,13 +1,12 @@
 const { ethers } = window;
 
-import { TurboFactory, ETHToTokenAmount } from '@ardrive/turbo-sdk/web';
-import { InjectedEthereumSigner } from '@dha-team/arbundles/web';
-
 let CONFIG = {};
 let userAddress = null;
 let currentRepo = null;
 let currentTokenId = '0';
 let currentUnchangedFiles = {};
+let currentFiles = [];
+let currentCostEth = '0';
 
 const NFT_ABI = [
     "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external",
@@ -194,6 +193,8 @@ async function prepareBackup() {
     
     if (result.success) {
         currentUnchangedFiles = result.unchangedFiles || {};
+        currentFiles = result.files || [];
+        currentCostEth = result.costEth || '0';
         
         if (result.files.length === 0) {
             setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
@@ -202,8 +203,14 @@ async function prepareBackup() {
             return;
         }
         
-        setStatus(`Augšupielādējam ${result.files.length} failus...`);
-        await uploadFilesWithMetaMask(result.files, result.repoName, result.tokenId);
+        document.getElementById('status').innerHTML = 
+            `💰 Apmaksas summa: <b>${result.costEth} ETH</b><br>` +
+            `📦 Faili: ${result.files.length}<br>` +
+            `Nospied "Iemaksāt un Backupēt", lai turpinātu!`;
+        
+        button.disabled = false;
+        button.textContent = 'Iemaksāt un Backupēt';
+        button.onclick = payAndExecute;
     } else {
         showError(result.error || 'Kļūda');
         button.disabled = false;
@@ -211,192 +218,110 @@ async function prepareBackup() {
     }
 }
 
-async function uploadFilesWithMetaMask(files, repoName, tokenId) {
+async function payAndExecute() {
     const button = document.getElementById('backupButton');
-    button.textContent = '⏳ Augšupielādē...';
+    button.disabled = true;
     
     try {
+        setStatus('1/3: Iemaksājam Treasury...');
+        
         const provider = new ethers.BrowserProvider(window.ethereum);
         const signer = await provider.getSigner();
         
-        const turbo = TurboFactory.authenticated({
-            signer: new InjectedEthereumSigner({ getSigner: () => signer }),
-            token: 'base-eth',
+        const tx = await signer.sendTransaction({
+            to: CONFIG.treasuryAddress,
+            value: ethers.parseEther(currentCostEth)
         });
         
-        // 1. Top up kredītus
-        setStatus('1/2: Pērkam kredītus...');
-        await turbo.topUpWithTokens({
-            tokenAmount: ETHToTokenAmount(0.0001),
+        setStatus('2/3: Gaida apstiprinājumu...');
+        await tx.wait();
+        
+        setStatus('3/3: Serveris augšupielādē...');
+        
+        const response = await fetch('/api/execute-backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                repoName: currentRepo,
+                files: currentFiles,
+                unchangedFiles: currentUnchangedFiles,
+                tokenId: currentTokenId,
+                costEth: currentCostEth,
+                walletAddress: userAddress
+            })
         });
         
-        // 2. Augšupielādēt failus
-        setStatus('2/2: Augšupielādējam failus...');
+        const result = await response.json();
         
-        const uploadResults = [];
-        
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            const binaryString = atob(file.content);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let j = 0; j < binaryString.length; j++) {
-                bytes[j] = binaryString.charCodeAt(j);
-            }
+        if (result.success) {
+            setStatus('✅ Augšupielāde pabeigta!');
             
-            setStatus(`Augšupielādējam ${i + 1}/${files.length}: ${file.path}`);
+            const manifestString = JSON.stringify({
+                manifest: 'arweave/paths',
+                version: '0.2.0',
+                index: { path: 'README.md' },
+                paths: {},
+                metadata: { repo: currentRepo, timestamp: new Date().toISOString() }
+            });
             
-            try {
-                const result = await turbo.uploadFile({
-                    fileStreamFactory: () => bytes,
-                    fileSizeFactory: () => bytes.length,
-                    dataItemOpts: {
-                        tags: [
-                            { name: 'App-Name', value: 'PermRepo' },
-                            { name: 'Repo', value: repoName },
-                            { name: 'File-Path', value: file.path },
-                            { name: 'Content-Type', value: 'text/plain' },
-                            { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
-                        ]
-                    }
-                });
-                
-                uploadResults.push({
-                    path: file.path,
-                    txId: result.id,
-                    size: file.size,
-                    hash: file.hash
-                });
-                
-                console.log(`[${i + 1}/${files.length}] ✅ ${file.path}: ${result.id}`);
-                
-            } catch (uploadError) {
-                console.error(`[${i + 1}/${files.length}] ❌ ${file.path}:`, uploadError.message);
-                
-                if (uploadError.code === 'ACTION_REJECTED') {
-                    showError('Transakcija atcelta MetaMask');
-                    button.disabled = false;
-                    button.textContent = 'Sākt backupu';
-                    return;
-                }
-                
-                throw uploadError;
-            }
+            const merkleRoot = calculateMerkleRoot({...currentUnchangedFiles});
+            const manifestHash = ethers.keccak256(new TextEncoder().encode(manifestString));
+            
+            setStatus('Ierakstam backupu blockchain...');
+            await addBackupToBlockchain(
+                currentTokenId,
+                manifestHash,
+                merkleRoot,
+                `ar://${result.manifestTxId}`
+            );
+            
+            setStatus('✅ Backups veiksmīgi pabeigts!');
+            button.textContent = '✅ Pabeigts!';
+            
+            document.getElementById('status').innerHTML = 
+                `✅ Backups veiksmīgs!<br>` +
+                `Manifests: ar://${result.manifestTxId}<br>` +
+                `Faili: ${result.uploadedFiles.length}`;
+            
+        } else {
+            showError(result.error || 'Kļūda');
+            button.disabled = false;
+            button.textContent = 'Mēģināt vēlreiz';
         }
-        
-        setStatus('Veidojam manifestu...');
-        
-        const manifest = {
-            manifest: 'arweave/paths',
-            version: '0.2.0',
-            index: { path: 'README.md' },
-            paths: {},
-            metadata: {
-                repo: repoName,
-                timestamp: new Date().toISOString(),
-                generatedBy: 'PermRepo v1.0.0'
-            }
-        };
-        
-        for (const f of uploadResults) {
-            manifest.paths[f.path] = { id: f.txId };
-        }
-        
-        for (const [fp, info] of Object.entries(currentUnchangedFiles)) {
-            manifest.paths[fp] = { id: info.txId };
-        }
-        
-        const manifestString = JSON.stringify(manifest, null, 2);
-        const manifestBytes = new TextEncoder().encode(manifestString);
-        const manifestResult = await turbo.uploadFile({
-            fileStreamFactory: () => manifestBytes,
-            fileSizeFactory: () => manifestBytes.length,
-            dataItemOpts: {
-                tags: [
-                    { name: 'App-Name', value: 'PermRepo' },
-                    { name: 'Type', value: 'path-manifest' },
-                    { name: 'Repo', value: repoName },
-                    { name: 'Content-Type', value: 'application/x.arweave-manifest+json' },
-                    { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
-                ]
-            }
-        });
-        
-        const manifestTxId = manifestResult.id;
-        console.log('Manifests:', manifestTxId);
-        
-        setStatus('Aprēķinam Merkle root...');
-        const merkleRoot = calculateMerkleRoot(manifest.paths);
-        const manifestHash = ethers.keccak256(new TextEncoder().encode(manifestString));
-        
-        setStatus('Ierakstam backupu blockchain...');
-        await addBackupToBlockchain(
-            tokenId,
-            manifestHash,
-            merkleRoot,
-            `ar://${manifestTxId}`
-        );
-        
-        setStatus('✅ Backups veiksmīgi pabeigts!');
-        button.textContent = '✅ Pabeigts!';
-        
-        document.getElementById('status').innerHTML = 
-            `✅ Backups veiksmīgs!<br>` +
-            `Faili: ${uploadResults.length} jauni + ${Object.keys(currentUnchangedFiles).length} nemainīti<br>` +
-            `Manifests: ar://${manifestTxId}<br>` +
-            `Merkle Root: ${merkleRoot.substring(0, 20)}...`;
         
     } catch (e) {
-        console.error('Augšupielādes kļūda:', e.message);
-        showError('Augšupielāde neizdevās: ' + e.message);
+        if (e.code === 'ACTION_REJECTED') {
+            showError('Transakcija atcelta');
+        } else {
+            showError(e.message);
+        }
         button.disabled = false;
-        button.textContent = 'Sākt backupu';
+        button.textContent = 'Iemaksāt un Backupēt';
     }
 }
 
 function calculateMerkleRoot(paths) {
     const entries = Object.entries(paths).sort(([a], [b]) => a.localeCompare(b));
     
-    if (entries.length === 0) {
-        return '0x0000000000000000000000000000000000000000000000000000000000000000';
-    }
-    
+    if (entries.length === 0) return '0x0000000000000000000000000000000000000000000000000000000000000000';
     if (entries.length === 1) {
         const [path, info] = entries[0];
-        return ethers.keccak256(
-            ethers.AbiCoder.defaultAbiCoder().encode(
-                ['string', 'string'],
-                [path, info.id]
-            )
-        );
+        return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string','string'], [path, info.txId]));
     }
     
-    let currentLevel = entries.map(([path, info]) => {
-        return ethers.keccak256(
-            ethers.AbiCoder.defaultAbiCoder().encode(
-                ['string', 'string'],
-                [path, info.id]
-            )
-        );
-    });
+    let level = entries.map(([path, info]) => 
+        ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string','string'], [path, info.txId]))
+    );
     
-    while (currentLevel.length > 1) {
-        const nextLevel = [];
-        for (let i = 0; i < currentLevel.length; i += 2) {
-            const left = currentLevel[i];
-            const right = currentLevel[i + 1] || left;
-            nextLevel.push(
-                ethers.keccak256(
-                    ethers.AbiCoder.defaultAbiCoder().encode(
-                        ['bytes32', 'bytes32'],
-                        [left, right]
-                    )
-                )
-            );
+    while (level.length > 1) {
+        const next = [];
+        for (let i = 0; i < level.length; i += 2) {
+            next.push(ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32','bytes32'], [level[i], level[i+1] || level[i]])));
         }
-        currentLevel = nextLevel;
+        level = next;
     }
     
-    return currentLevel[0];
+    return level[0];
 }
 
 async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifestURI) {
@@ -404,10 +329,9 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
     const signerContract = await provider.getSigner();
     
     const nftContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, signerContract);
+    const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
     
     const deadline = Math.floor(Date.now() / 1000) + 600;
-    
-    const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
     const currentNonce = await readContract.getNonce(tokenId);
     const backupNumber = await readContract.getBackupCount(tokenId);
     
@@ -430,10 +354,10 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
     };
     
     const value = {
-        tokenId: tokenId,
+        tokenId,
         backupNumber: backupNumber + 1n,
-        manifestHash: manifestHash,
-        merkleRoot: merkleRoot,
+        manifestHash,
+        merkleRoot,
         deadline: BigInt(deadline),
         nonce: currentNonce
     };
@@ -450,8 +374,6 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
     );
     
     await tx.wait();
-    console.log('addBackup transakcija veiksmīga:', tx.hash);
-    
     return tx.hash;
 }
 
