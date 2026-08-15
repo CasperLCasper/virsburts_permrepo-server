@@ -11,9 +11,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==========================================
-// KONFIGURĀCIJA NO RENDER MAINĪGAJIEM
-// ==========================================
 const RPC_URL = process.env.RPC_URL;
 const NFT_ADDRESS = process.env.NFT_ADDRESS;
 const SUBSCRIPTION_ADDRESS = process.env.SUBSCRIPTION_ADDRESS;
@@ -39,9 +36,8 @@ const SUBSCRIPTION_ABI = [
 ];
 
 const REGISTRY_ABI = [
-    "function canBackup(uint256 nftTokenId) external view returns (bool)",
-    "function verifyOwnership(uint256 nftTokenId) external view returns (address)",
-    "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)"
+    "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)",
+    "function verifyOwnership(uint256 nftTokenId) external view returns (address)"
 ];
 
 app.use(express.json({ limit: '100mb' }));
@@ -56,9 +52,6 @@ app.use(session({
     cookie: { secure: false, maxAge: 3600000 }
 }));
 
-// ==========================================
-// IEGŪT KONFIGURĀCIJU (priekš frontend)
-// ==========================================
 app.get('/api/config', (req, res) => {
     res.json({
         chainId: CHAIN_ID,
@@ -71,9 +64,6 @@ app.get('/api/config', (req, res) => {
     });
 });
 
-// ==========================================
-// GITHUB OAUTH
-// ==========================================
 app.get('/api/github/login', (req, res) => {
     if (!GITHUB_CLIENT_ID) {
         return res.status(500).json({ error: 'GitHub OAuth nav konfigurēts' });
@@ -147,9 +137,6 @@ app.get('/api/github/user', (req, res) => {
     }
 });
 
-// ==========================================
-// IEGŪT LIETOTĀJA REPOZITORIJUS
-// ==========================================
 app.get('/api/github/repos', async (req, res) => {
     const githubToken = req.session.githubToken;
     
@@ -183,9 +170,6 @@ app.get('/api/github/repos', async (req, res) => {
     }
 });
 
-// ==========================================
-// PĀRBAUDĪT REPO STATUSU (NFT, abonements, reģistrācija)
-// ==========================================
 app.post('/api/check-repo-status', async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
@@ -224,7 +208,8 @@ app.post('/api/check-repo-status', async (req, res) => {
             
             const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
             try {
-                isRegistered = await registryContract.canBackup(tokenId);
+                const repoId = await registryContract.getRepositoryByNFT(tokenId);
+                isRegistered = repoId !== ethers.ZeroHash;
             } catch (e) {
                 console.warn('Registry pārbaudes kļūda:', e.message);
                 isRegistered = false;
@@ -247,9 +232,6 @@ app.post('/api/check-repo-status', async (req, res) => {
     }
 });
 
-// ==========================================
-// SAGATAVOT BACKUPU — inkrementālā loģika
-// ==========================================
 app.post('/api/prepare-backup', async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
@@ -288,9 +270,9 @@ app.post('/api/prepare-backup', async (req, res) => {
         }
         
         const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
-        const canBackup = await registryContract.canBackup(tokenId);
+        const repoId = await registryContract.getRepositoryByNFT(tokenId);
         
-        if (!canBackup) {
+        if (repoId === ethers.ZeroHash) {
             return res.status(400).json({ error: 'Repo nav reģistrēts Registry' });
         }
         
@@ -362,9 +344,6 @@ app.post('/api/prepare-backup', async (req, res) => {
     }
 });
 
-// ==========================================
-// PALĪGFUNKCIJA: IEGŪT REPO FAILUS
-// ==========================================
 async function getRepoFiles(githubToken, owner, repo, path = '') {
     const files = [];
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
@@ -407,9 +386,6 @@ async function getRepoFiles(githubToken, owner, repo, path = '') {
     return files;
 }
 
-// ==========================================
-// VESELĪBAS PĀRBAUDE
-// ==========================================
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -425,7 +401,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Statiskie faili
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'backup.html'));
 });
