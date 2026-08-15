@@ -9,14 +9,7 @@ try {
         format: 'esm',
         platform: 'browser',
         outfile: 'public/js/backup-bundle.js',
-        alias: {
-            'fs': 'empty',
-            'path': 'empty',
-            'crypto': 'empty',
-            'stream': 'empty',
-            'buffer': 'empty',
-            'node:stream': 'empty'
-        },
+        external: ['fs', 'path', 'crypto', 'stream', 'buffer', 'node:stream'],
         define: {
             'process.env.NODE_ENV': '"production"',
             'global': 'window'
