@@ -27,8 +27,8 @@ const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-const UPSTASH_REDIS_URL = process.env.UPSTASH_REDIS_URL;
-const UPSTASH_REDIS_TOKEN = process.env.UPSTASH_REDIS_TOKEN;
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
@@ -56,10 +56,10 @@ let sessionConfig = {
     cookie: { secure: false, maxAge: 3600000 }
 };
 
-if (UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN) {
+if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
     const redis = new Redis({
-        url: UPSTASH_REDIS_URL,
-        token: UPSTASH_REDIS_TOKEN,
+        url: UPSTASH_REDIS_REST_URL,
+        token: UPSTASH_REDIS_REST_TOKEN,
     });
     
     const redisStore = new RedisStore({
@@ -434,7 +434,7 @@ app.get('/api/health', (req, res) => {
             usdc: !!USDC_ADDRESS,
             apiKey: !!API_KEY,
             githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET),
-            upstashRedis: !!(UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN)
+            upstashRedis: !!(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN)
         }
     });
 });
@@ -456,6 +456,6 @@ app.listen(PORT, () => {
     console.log('  GITHUB_CLIENT_ID:', GITHUB_CLIENT_ID ? 'IR' : 'NAV');
     console.log('  GITHUB_CLIENT_SECRET:', GITHUB_CLIENT_SECRET ? 'IR' : 'NAV');
     console.log('  API_KEY:', API_KEY ? 'IR' : 'NAV');
-    console.log('  UPSTASH_REDIS:', (UPSTASH_REDIS_URL && UPSTASH_REDIS_TOKEN) ? 'IR' : 'NAV');
+    console.log('  UPSTASH_REDIS:', (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) ? 'IR' : 'NAV');
     console.log('========================================');
 });
