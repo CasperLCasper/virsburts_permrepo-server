@@ -3,13 +3,7 @@ const { ethers } = window;
 import { TurboFactory, OnDemandFunding, ETHToTokenAmount } from 'https://cdn.jsdelivr.net/npm/@ardrive/turbo-sdk@1.42.0/+esm';
 import { InjectedEthereumSigner } from 'https://cdn.jsdelivr.net/npm/@dha-team/arbundles@latest/+esm';
 
-let CONFIG = {
-    chainId: '0x14a34',
-    nftAddress: '',
-    subscriptionAddress: '',
-    rpcUrl: '',
-    arweaveGateway: 'https://ar-io.dev'
-};
+let CONFIG = {};
 
 let signer = null;
 let userAddress = null;
@@ -212,7 +206,6 @@ async function uploadFilesWithMetaMask(files, repoName, tokenId) {
         
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
-            // Decode base64 atpakaļ uz binārajiem datiem
             const binaryString = atob(file.content);
             const bytes = new Uint8Array(binaryString.length);
             for (let j = 0; j < binaryString.length; j++) {
@@ -396,7 +389,7 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
     const domain = {
         name: 'PermRepo',
         version: '1',
-        chainId: 84532,
+        chainId: parseInt(CONFIG.chainId, 16),
         verifyingContract: CONFIG.nftAddress
     };
     
