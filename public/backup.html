@@ -32,6 +32,23 @@
         </div>
     </div>
     
+    <div id="walletSection" style="display: none;">
+        <div class="info-row text-left">
+            <span class="info-label">Maka adrese</span>
+            <input type="text" id="walletInput" placeholder="0x..." readonly>
+        </div>
+        <button id="connectWalletButton" class="sign-button">Savienot maku</button>
+    </div>
+    
+    <div id="statusSection" style="display: none;">
+        <div class="status" id="nftStatus"></div>
+        <div class="status" id="subscriptionStatus"></div>
+    </div>
+    
+    <button id="backupButton" class="sign-button" style="display: none;" disabled>
+        Sākt backupu
+    </button>
+    
     <div class="status" id="status"></div>
     <div class="error" id="error"></div>
 </div>
