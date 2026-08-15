@@ -1,6 +1,6 @@
 const { ethers } = window;
 
-import { TurboFactory, OnDemandFunding, ETHToTokenAmount } from '@ardrive/turbo-sdk/web';
+import { TurboFactory, ETHToTokenAmount } from '@ardrive/turbo-sdk/web';
 import { InjectedEthereumSigner } from '@dha-team/arbundles/web';
 
 let CONFIG = {};
@@ -224,6 +224,15 @@ async function uploadFilesWithMetaMask(files, repoName, tokenId) {
             token: 'base-eth',
         });
         
+        // 1. Top up kredītus
+        setStatus('1/2: Pērkam kredītus...');
+        await turbo.topUpWithTokens({
+            tokenAmount: ETHToTokenAmount(0.0001),
+        });
+        
+        // 2. Augšupielādēt failus
+        setStatus('2/2: Augšupielādējam failus...');
+        
         const uploadResults = [];
         
         for (let i = 0; i < files.length; i++) {
@@ -240,9 +249,6 @@ async function uploadFilesWithMetaMask(files, repoName, tokenId) {
                 const result = await turbo.uploadFile({
                     fileStreamFactory: () => bytes,
                     fileSizeFactory: () => bytes.length,
-                    fundingMode: new OnDemandFunding({
-                        maxTokenAmount: ETHToTokenAmount(0.001),
-                    }),
                     dataItemOpts: {
                         tags: [
                             { name: 'App-Name', value: 'PermRepo' },
@@ -304,9 +310,6 @@ async function uploadFilesWithMetaMask(files, repoName, tokenId) {
         const manifestResult = await turbo.uploadFile({
             fileStreamFactory: () => manifestBytes,
             fileSizeFactory: () => manifestBytes.length,
-            fundingMode: new OnDemandFunding({
-                maxTokenAmount: ETHToTokenAmount(0.001),
-            }),
             dataItemOpts: {
                 tags: [
                     { name: 'App-Name', value: 'PermRepo' },
