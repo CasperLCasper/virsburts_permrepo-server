@@ -15,6 +15,10 @@ const NFT_ABI = [
     "function getBackupCount(uint256 tokenId) external view returns (uint256)"
 ];
 
+const TREASURY_ABI = [
+    "function balance() external view returns (uint256)"
+];
+
 async function init() {
     try {
         const configResponse = await fetch('/api/config');
@@ -205,12 +209,9 @@ async function prepareBackup() {
             return;
         }
         
-        const treasuryBalanceEth = ethers.formatEther(result.treasuryBalance || '0');
-        
         document.getElementById('status').innerHTML = 
             `📦 Faili: ${result.files.length}<br>` +
-            `💰 Izmaksas: ${result.costEth} ETH<br>` +
-            `🏦 Treasury bilance: ${treasuryBalanceEth} ETH`;
+            `💰 Izmaksas: ${result.costEth} ETH`;
         
         button.disabled = false;
         button.textContent = 'Izpildīt backupu';
@@ -227,10 +228,41 @@ async function executeBackup() {
     button.disabled = true;
     
     try {
+        // 1. Pārbaudam Treasury bilanci
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        
+        const treasuryContract = new ethers.Contract(
+            CONFIG.treasuryAddress,
+            TREASURY_ABI,
+            provider
+        );
+        
+        const balance = await treasuryContract.balance();
+        const costWei = ethers.parseEther(currentCostEth);
+        
+        // 2. Ja nav pietiekami, iemaksājam
+        if (balance < costWei) {
+            setStatus('Iemaksājam Treasury...');
+            button.textContent = '⏳ Iemaksā...';
+            
+            const tx = await signer.sendTransaction({
+                to: CONFIG.treasuryAddress,
+                value: costWei
+            });
+            
+            setStatus('Gaida iemaksas apstiprinājumu...');
+            button.textContent = '⏳ Gaida...';
+            await tx.wait();
+            
+            setStatus('✅ Iemaksa veiksmīga!');
+        }
+        
+        // 3. Izpildam backupu
         setStatus('Serveris apmaksā un augšupielādē...');
         button.textContent = '⏳ Backups...';
         
-        let response = await fetch('/api/execute-backup', {
+        const response = await fetch('/api/execute-backup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -243,43 +275,7 @@ async function executeBackup() {
             })
         });
         
-        let result = await response.json();
-        
-        // Ja serveris saka, ka Treasury nav līdzekļu, iemaksājam
-        if (!result.success && result.error && result.error.includes('Treasury')) {
-            setStatus('Iemaksājam Treasury...');
-            button.textContent = '⏳ Iemaksā...';
-            
-            const provider = new ethers.BrowserProvider(window.ethereum);
-            const signer = await provider.getSigner();
-            
-            const tx = await signer.sendTransaction({
-                to: CONFIG.treasuryAddress,
-                value: ethers.parseEther(currentCostEth)
-            });
-            
-            setStatus('Gaida iemaksas apstiprinājumu...');
-            button.textContent = '⏳ Gaida...';
-            await tx.wait();
-            
-            setStatus('✅ Iemaksa veiksmīga! Mēģinām vēlreiz...');
-            button.textContent = '⏳ Backups...';
-            
-            response = await fetch('/api/execute-backup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    repoName: currentRepo,
-                    files: currentFiles,
-                    unchangedFiles: currentUnchangedFiles,
-                    tokenId: currentTokenId,
-                    costEth: currentCostEth,
-                    walletAddress: userAddress
-                })
-            });
-            
-            result = await response.json();
-        }
+        const result = await response.json();
         
         if (result.success) {
             setStatus('✅ Augšupielāde pabeigta! Ierakstam blockchain...');
