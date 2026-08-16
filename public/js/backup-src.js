@@ -6,7 +6,6 @@ let currentRepo = null;
 let currentTokenId = '0';
 let currentUnchangedFiles = {};
 let currentFiles = [];
-let currentCostWinc = '0';
 let currentCostEth = '0';
 let currentPreviousHistory = [];
 let hasDeposited = false;
@@ -133,10 +132,7 @@ async function checkRepoStatus(repoName) {
     const response = await fetch('/api/check-repo-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            repoName,
-            walletAddress: userAddress
-        })
+        body: JSON.stringify({ repoName, walletAddress: userAddress })
     });
     
     const result = await response.json();
@@ -170,7 +166,6 @@ async function checkRepoStatus(repoName) {
             backupButton.onclick = prepareBackup;
         } else {
             backupButton.style.display = 'none';
-            
             if (result.hasNFT && result.hasSubscription && !result.isRegistered) {
                 document.getElementById('status').innerHTML = 
                     '❌ Repo nav reģistrēts — <a href="/register.html?repo=' + encodeURIComponent(repoName) + '">Reģistrēt repo</a>';
@@ -191,10 +186,7 @@ async function prepareBackup() {
     const response = await fetch('/api/prepare-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            repoName: currentRepo,
-            walletAddress: userAddress
-        })
+        body: JSON.stringify({ repoName: currentRepo, walletAddress: userAddress })
     });
     
     const result = await response.json();
@@ -202,7 +194,6 @@ async function prepareBackup() {
     if (result.success) {
         currentUnchangedFiles = result.unchangedFiles || {};
         currentFiles = result.files || [];
-        currentCostWinc = result.costWinc || '0';
         currentCostEth = result.costEth || '0';
         currentPreviousHistory = result.previousHistory || [];
         
@@ -232,42 +223,24 @@ async function executeBackup() {
     button.disabled = true;
     
     try {
-        // 1. Tikai vienu reizi pārbaudam un iemaksājam
         if (!hasDeposited) {
             const provider = new ethers.BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
             
-            const treasuryContract = new ethers.Contract(
-                CONFIG.treasuryAddress,
-                TREASURY_ABI,
-                provider
-            );
-            
+            const treasuryContract = new ethers.Contract(CONFIG.treasuryAddress, TREASURY_ABI, provider);
             const balance = await treasuryContract.balance();
             const costWei = ethers.parseEther(currentCostEth);
             
             if (balance < costWei) {
                 setStatus('Iemaksājam Treasury...');
-                button.textContent = '⏳ Iemaksā...';
-                
-                const tx = await signer.sendTransaction({
-                    to: CONFIG.treasuryAddress,
-                    value: costWei
-                });
-                
-                setStatus('Gaida iemaksas apstiprinājumu...');
-                button.textContent = '⏳ Gaida...';
+                const tx = await signer.sendTransaction({ to: CONFIG.treasuryAddress, value: costWei });
                 await tx.wait();
-                
                 setStatus('✅ Iemaksa veiksmīga!');
             }
-            
             hasDeposited = true;
         }
         
-        // 2. Izpildam backupu
         setStatus('Serveris apmaksā un augšupielādē...');
-        button.textContent = '⏳ Backups...';
         
         const response = await fetch('/api/execute-backup', {
             method: 'POST',
@@ -286,35 +259,19 @@ async function executeBackup() {
         const result = await response.json();
         
         if (result.success) {
-            setStatus('✅ Augšupielāde pabeigta! Ierakstam blockchain...');
-            
-            await addBackupToBlockchain(
-                currentTokenId,
-                result.manifestTxId
-            );
+            await addBackupToBlockchain(currentTokenId, result.manifestTxId);
             
             setStatus('✅ Backups veiksmīgi pabeigts!');
             button.textContent = '✅ Pabeigts!';
-            
-            let historyHtml = '';
-            if (result.history && result.history.length > 0) {
-                historyHtml = '<br><br>📜 Vēsture:<br>';
-                for (const item of result.history) {
-                    historyHtml += `#${item.backupNumber}: <a href="${item.url}" target="_blank">${item.manifestId}</a><br>`;
-                }
-            }
             
             document.getElementById('status').innerHTML = 
                 `✅ Backups veiksmīgs!<br>` +
                 `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${result.manifestTxId}" target="_blank">ar://${result.manifestTxId}</a><br>` +
                 `Faili: ${result.uploadedFiles.length}<br>` +
-                `Izmaksas: ${result.costEth} ETH` +
-                historyHtml;
-            
+                `Izmaksas: ${result.costEth} ETH`;
         } else {
             showError(result.error || 'Kļūda');
             button.disabled = false;
-            button.textContent = 'Mēģināt vēlreiz';
         }
         
     } catch (e) {
@@ -324,7 +281,6 @@ async function executeBackup() {
             showError(e.message);
         }
         button.disabled = false;
-        button.textContent = 'Izpildīt backupu';
     }
 }
 
@@ -371,19 +327,8 @@ async function addBackupToBlockchain(tokenId, manifestTxId) {
     };
     
     const signature = await signerContract.signTypedData(domain, types, value);
-    
-    const tx = await nftContract.addBackup(
-        tokenId,
-        manifestHash,
-        merkleRoot,
-        manifestURI,
-        deadline,
-        signature
-    );
-    
+    const tx = await nftContract.addBackup(tokenId, manifestHash, merkleRoot, manifestURI, deadline, signature);
     await tx.wait();
-    console.log('addBackup transakcija veiksmīga:', tx.hash);
-    
     return tx.hash;
 }
 
