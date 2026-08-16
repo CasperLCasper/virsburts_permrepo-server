@@ -34,7 +34,8 @@ const NFT_ABI = [
     "function ownerOf(uint256 tokenId) external view returns (address)",
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)"
+    "function getNonce(uint256 tokenId) external view returns (uint256)",
+    "event BackupAdded(uint256 indexed tokenId, uint256 indexed backupNumber, bytes32 indexed merkleRoot, bytes32 manifestHash, string manifestURI, uint256 nonce)"
 ];
 
 const SUBSCRIPTION_ABI = [
@@ -255,7 +256,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         
-        // Iegūst iepriekšējo manifestu
         let previousPaths = {};
         
         if (backupCount > 0) {
@@ -287,7 +287,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         const currentFiles = await getRepoFiles(githubToken, repoParts[0], repoParts[1]);
         if (currentFiles.length === 0) return res.status(400).json({ success: false, error: 'Nav failu repo' });
         
-        // Inkrementālā salīdzināšana
         const changedFiles = [];
         const unchangedFiles = {};
         
@@ -451,23 +450,48 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
-        // 4. Manifests ar hash vērtībām
+        // 4. Iegūst vēsturi no blockchain events
+        const filter = nftContract.filters.BackupAdded(onChainTokenId);
+        const backupEvents = await nftContract.queryFilter(filter);
+        
+        const history = backupEvents.map(event => {
+            const uri = event.args.manifestURI;
+            const id = uri.startsWith('ar://') ? uri.slice(5) : uri;
+            return {
+                backupNumber: Number(event.args.backupNumber),
+                manifestId: id,
+                url: `${ARWEAVE_GATEWAY}/raw/${id}`
+            };
+        });
+        
+        console.log('Vēsture iegūta:', history.length, 'iepriekšējie manifesti');
+        
+        // 5. Veido manifestu ar vēsturi
         const manifest = {
             manifest: 'arweave/paths',
             version: '0.2.0',
             paths: {},
+            history,
             metadata: { repo: repoName, timestamp: new Date().toISOString(), generatedBy: 'PermRepo v1.0.0' }
         };
         
-        // Pievieno jaunos failus ar hash
+        // Pievieno jaunos failus ar hash un url
         for (const file of uploadResults) {
-            manifest.paths[file.path] = { id: file.txId, hash: file.hash };
+            manifest.paths[file.path] = {
+                id: file.txId,
+                hash: file.hash,
+                url: `${ARWEAVE_GATEWAY}/raw/${file.txId}`
+            };
         }
         
-        // Pievieno nemainītos failus ar hash
+        // Pievieno nemainītos failus ar hash un url
         for (const [filePath, info] of Object.entries(unchangedFiles || {})) {
             if (info && info.txId) {
-                manifest.paths[filePath] = { id: info.txId, hash: info.hash };
+                manifest.paths[filePath] = {
+                    id: info.txId,
+                    hash: info.hash,
+                    url: `${ARWEAVE_GATEWAY}/raw/${info.txId}`
+                };
             }
         }
         
@@ -500,7 +524,8 @@ app.post('/api/execute-backup', async (req, res) => {
             manifestTxId: manifestResult.id,
             uploadedFiles: uploadResults,
             costEth,
-            paymentTx: payTx.hash
+            paymentTx: payTx.hash,
+            history
         });
         
     } catch (error) {
