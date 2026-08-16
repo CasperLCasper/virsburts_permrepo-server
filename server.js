@@ -268,13 +268,12 @@ app.post('/api/prepare-backup', async (req, res) => {
                     const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${txId}`);
                     if (manifestResponse.ok) {
                         const previousManifest = await manifestResponse.json();
-                        if (previousManifest && previousManifest.paths) {
+                        if (previousManifest.paths) {
                             previousPaths = previousManifest.paths;
                         }
-                        if (previousManifest && previousManifest.history) {
+                        if (previousManifest.history) {
                             previousHistory = previousManifest.history;
                         }
-                        console.log('Iepriekšējais manifests iegūts ar', Object.keys(previousPaths).length, 'failiem un', previousHistory.length, 'vēstures ierakstiem');
                     }
                 } catch (e) {
                     console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(e));
@@ -283,8 +282,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         }
         
         const repoParts = repoName.split('/');
-        if (repoParts.length !== 2) return res.status(400).json({ success: false, error: 'Repo jābūt owner/repository formātā' });
-        
         const currentFiles = await getRepoFiles(githubToken, repoParts[0], repoParts[1]);
         if (currentFiles.length === 0) return res.status(400).json({ success: false, error: 'Nav failu repo' });
         
@@ -293,20 +290,12 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         for (const file of currentFiles) {
             const previousFile = previousPaths[file.path];
-            
             if (previousFile && previousFile.id && previousFile.hash && previousFile.hash === file.hash) {
-                unchangedFiles[file.path] = {
-                    txId: previousFile.id,
-                    size: file.size,
-                    hash: file.hash
-                };
+                unchangedFiles[file.path] = { txId: previousFile.id, size: file.size, hash: file.hash };
             } else {
                 changedFiles.push(file);
             }
         }
-        
-        console.log('Mainīti/jauni faili:', changedFiles.length);
-        console.log('Nemainīti faili:', Object.keys(unchangedFiles).length);
         
         const totalBytes = changedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
         
@@ -387,7 +376,6 @@ app.post('/api/execute-backup', async (req, res) => {
         if (!costEth) return res.status(400).json({ success: false, error: 'Nav costEth' });
         
         const provider = getProvider();
-        
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
         const repoHash = getRepositoryHash(repoName);
         const onChainTokenId = await nftContract.repositoryTokens(repoHash);
@@ -404,29 +392,23 @@ app.post('/api/execute-backup', async (req, res) => {
         const repoId = await registryContract.getRepositoryByNFT(onChainTokenId);
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry' });
         
-        // 1. payTurbo no Treasury
+        // 1. payTurbo
         const operatorWallet = getOperatorWallet(provider);
         const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
         const costWei = ethers.parseEther(costEth);
         const paymentId = ethers.id(repoName + Date.now().toString());
-        
         const payTx = await treasuryWrite.payTurbo(costWei, paymentId);
         await payTx.wait();
-        console.log('✅ Treasury payTurbo veiksmīgs:', payTx.hash);
         
-        // 2. Pagaida, kamēr Turbo apstrādā maksājumu
+        // 2. Pagaida
         await new Promise(resolve => setTimeout(resolve, 5000));
         
-        // 3. Augšupielādē failus
+        // 3. Upload failus
         const turbo = getTurbo();
         const uploadResults = [];
         
         for (const file of files) {
-            if (!file.path || !file.content) throw new Error(`Nederīgs fails: ${file.path}`);
-            
             const fileBuffer = Buffer.from(file.content, 'base64');
-            console.log('Augšupielādē:', file.path);
-            
             const result = await turbo.uploadFile({
                 fileStreamFactory: () => Readable.from(fileBuffer),
                 fileSizeFactory: () => fileBuffer.length,
@@ -436,23 +418,16 @@ app.post('/api/execute-backup', async (req, res) => {
                         { name: 'Repo', value: repoName },
                         { name: 'File-Path', value: file.path },
                         { name: 'Content-Type', value: getContentType(file.path) },
-                        { name: 'Content-SHA256', value: file.hash || crypto.createHash('sha256').update(fileBuffer).digest('hex') },
+                        { name: 'Content-SHA256', value: file.hash },
                         { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
                     ]
                 }
             });
             
-            if (!result || !result.id) throw new Error(`Turbo neatgrieza ID failam: ${file.path}`);
-            
-            uploadResults.push({
-                path: file.path,
-                txId: result.id,
-                size: fileBuffer.length,
-                hash: file.hash || crypto.createHash('sha256').update(fileBuffer).digest('hex')
-            });
+            uploadResults.push({ path: file.path, txId: result.id, size: fileBuffer.length, hash: file.hash });
         }
         
-        // 4. Veido manifestu ar vēsturi
+        // 4. Veido manifestu
         const backupCount = Number(await nftContract.getBackupCount(onChainTokenId));
         const newBackupNumber = backupCount + 1;
         
@@ -460,11 +435,11 @@ app.post('/api/execute-backup', async (req, res) => {
             manifest: 'arweave/paths',
             version: '0.2.0',
             paths: {},
-            history: previousHistory || [],
+            history: [],
             metadata: { repo: repoName, backupNumber: newBackupNumber, timestamp: new Date().toISOString(), generatedBy: 'PermRepo v1.0.0' }
         };
         
-        // Pievieno jaunos failus ar hash un url
+        // Jaunie faili
         for (const file of uploadResults) {
             manifest.paths[file.path] = {
                 id: file.txId,
@@ -473,7 +448,7 @@ app.post('/api/execute-backup', async (req, res) => {
             };
         }
         
-        // Pievieno nemainītos failus ar hash un url
+        // Nemainītie faili
         for (const [filePath, info] of Object.entries(unchangedFiles || {})) {
             if (info && info.txId) {
                 manifest.paths[filePath] = {
@@ -490,8 +465,6 @@ app.post('/api/execute-backup', async (req, res) => {
         }
         
         const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
-        console.log('Augšupielādē manifestu...');
-        
         const manifestResult = await turbo.uploadFile({
             fileStreamFactory: () => Readable.from(manifestBuffer),
             fileSizeFactory: () => manifestBuffer.length,
@@ -506,9 +479,7 @@ app.post('/api/execute-backup', async (req, res) => {
             }
         });
         
-        if (!manifestResult || !manifestResult.id) throw new Error('Turbo neatgrieza manifest ID');
-        
-        // 5. Pievieno pašreizējo manifestu vēsturei atbildei
+        // 5. Pievieno vēsturi
         const currentManifestEntry = {
             backupNumber: newBackupNumber,
             manifestId: manifestResult.id,
@@ -538,7 +509,6 @@ function getContentType(filePath) {
     if (lower.endsWith('.html')) return 'text/html';
     if (lower.endsWith('.css')) return 'text/css';
     if (lower.endsWith('.js') || lower.endsWith('.mjs')) return 'application/javascript';
-    if (lower.endsWith('.ts')) return 'text/plain';
     if (lower.endsWith('.md')) return 'text/markdown';
     if (lower.endsWith('.xml')) return 'application/xml';
     if (lower.endsWith('.svg')) return 'image/svg+xml';
@@ -617,13 +587,5 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
     console.log('========================================');
     console.log('PermRepo serveris klausās uz porta', PORT);
-    console.log('========================================');
-    console.log('RPC_URL:', RPC_URL ? 'IR' : 'NAV');
-    console.log('OPERATOR_PRIVATE_KEY:', OPERATOR_PRIVATE_KEY ? 'IR' : 'NAV');
-    console.log('TREASURY_ADDRESS:', TREASURY_ADDRESS || 'NAV');
-    console.log('NFT_ADDRESS:', NFT_ADDRESS || 'NAV');
-    console.log('SUBSCRIPTION_ADDRESS:', SUBSCRIPTION_ADDRESS || 'NAV');
-    console.log('REGISTRY_ADDRESS:', REGISTRY_ADDRESS || 'NAV');
-    console.log('TURBO_TOKEN:', TURBO_TOKEN);
     console.log('========================================');
 });
