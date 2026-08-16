@@ -439,7 +439,6 @@ app.post('/api/execute-backup', async (req, res) => {
         // 4. Veido vēsturi
         const history = [...(previousHistory || [])];
         
-        // Pievieno iepriekšējo manifestu kā pēdējo vēsturē
         if (previousManifestId) {
             history.push({
                 backupNumber: previousBackupNumber || history.length,
@@ -448,16 +447,22 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
-        // 5. Veido manifestu ar vēsturi
+        // 5. Veido manifestu — metadata SĀKUMĀ
         const backupCount = Number(await nftContract.getBackupCount(onChainTokenId));
         const newBackupNumber = backupCount + 1;
         
         const manifest = {
+            metadata: {
+                repo: repoName,
+                backupNumber: newBackupNumber,
+                timestamp: new Date().toISOString(),
+                generatedBy: 'PermRepo v1.0.0'
+            },
             manifest: 'arweave/paths',
             version: '0.2.0',
+            index: { path: 'README.md' },
             paths: {},
-            history,
-            metadata: { repo: repoName, backupNumber: newBackupNumber, timestamp: new Date().toISOString(), generatedBy: 'PermRepo v1.0.0' }
+            history
         };
         
         // Jaunie faili
