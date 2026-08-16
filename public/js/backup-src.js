@@ -7,6 +7,7 @@ let currentTokenId = '0';
 let currentUnchangedFiles = {};
 let currentFiles = [];
 let currentCostWinc = '0';
+let currentCostEth = '0';
 
 const NFT_ABI = [
     "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external",
@@ -195,6 +196,7 @@ async function prepareBackup() {
         currentUnchangedFiles = result.unchangedFiles || {};
         currentFiles = result.files || [];
         currentCostWinc = result.costWinc || '0';
+        currentCostEth = result.costEth || '0';
         
         if (result.files.length === 0) {
             setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
@@ -203,10 +205,15 @@ async function prepareBackup() {
             return;
         }
         
+        const treasuryBalanceEth = ethers.formatEther(result.treasuryBalance || '0');
+        
         document.getElementById('status').innerHTML = 
             `📦 Faili: ${result.files.length}<br>` +
-            `💰 Izmaksas: ${result.costWinc} winc<br>` +
-            `Nospied "Izpildīt backupu", lai turpinātu!`;
+            `💰 Izmaksas: ${result.costEth} ETH<br>` +
+            `🏦 Treasury bilance: ${treasuryBalanceEth} ETH<br>` +
+            (result.hasEnoughTreasury
+                ? '✅ Treasury ir pietiekami līdzekļu!<br>Nospied "Izpildīt backupu"!'
+                : '❌ Treasury nav pietiekami līdzekļu!<br>Vispirms iemaksā ETH Treasury!');
         
         button.disabled = false;
         button.textContent = 'Izpildīt backupu';
@@ -223,7 +230,7 @@ async function executeBackup() {
     button.disabled = true;
     
     try {
-        setStatus('Serveris augšupielādē failus...');
+        setStatus('Serveris apmaksā un augšupielādē failus...');
         
         const response = await fetch('/api/execute-backup', {
             method: 'POST',
@@ -234,6 +241,7 @@ async function executeBackup() {
                 unchangedFiles: currentUnchangedFiles,
                 tokenId: currentTokenId,
                 costWinc: currentCostWinc,
+                costEth: currentCostEth,
                 walletAddress: userAddress
             })
         });
@@ -254,7 +262,8 @@ async function executeBackup() {
             document.getElementById('status').innerHTML = 
                 `✅ Backups veiksmīgs!<br>` +
                 `Manifests: ar://${result.manifestTxId}<br>` +
-                `Faili: ${result.uploadedFiles.length}`;
+                `Faili: ${result.uploadedFiles.length}<br>` +
+                `Izmaksas: ${result.costEth} ETH`;
             
         } else {
             showError(result.error || 'Kļūda');
