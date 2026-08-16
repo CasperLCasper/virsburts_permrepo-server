@@ -73,7 +73,19 @@ const SESSION_SECRET =
 
 /*
 |--------------------------------------------------------------------------
-| TURBO CONFIG
+| TURBO
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+|
+| getUploadCosts() -> winc
+|
+| winc nav Base ETH.
+|
+| Mēs nekad neizmantojam:
+|
+| costInfo.tokenAmount
+|
 |--------------------------------------------------------------------------
 */
 
@@ -91,12 +103,25 @@ const TURBO_PAYMENT_URL =
 
 /*
 |--------------------------------------------------------------------------
-| LIMITS
+| OPTIONAL TURBO RESERVE SETTINGS
+|--------------------------------------------------------------------------
+|
+| Ja iestatīts, serveris neļaus backup izpildīt,
+| ja operatora Turbo kredītu atlikums pēc backup
+| būtu mazāks par šo rezervi.
+|
+| Piemēram:
+|
+| TURBO_MIN_RESERVE_WINC=1000000000
+|
+| Ja nav iestatīts -> 0.
 |--------------------------------------------------------------------------
 */
 
-const MAX_FILE_SIZE =
-    100 * 1024 * 1024;
+const TURBO_MIN_RESERVE_WINC =
+    process.env.TURBO_MIN_RESERVE_WINC
+        ? BigInt(process.env.TURBO_MIN_RESERVE_WINC)
+        : 0n;
 
 /*
 |--------------------------------------------------------------------------
@@ -105,33 +130,19 @@ const MAX_FILE_SIZE =
 */
 
 const NFT_ABI = [
-
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
-
     "function ownerOf(uint256 tokenId) external view returns (address)",
-
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
-
     "function getManifestURI(uint256 tokenId) external view returns (string)",
-
     "function getNonce(uint256 tokenId) external view returns (uint256)"
 ];
 
 const SUBSCRIPTION_ABI = [
-
     "function isSubscribed(uint256 tokenId) external view returns (bool)"
 ];
 
 const REGISTRY_ABI = [
-
     "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)"
-];
-
-const TREASURY_ABI = [
-
-    "function payTurbo(uint256 amount, bytes32 paymentId) external",
-
-    "function balance() external view returns (uint256)"
 ];
 
 /*
@@ -169,7 +180,6 @@ app.use(
 
 app.use(
     session({
-
         secret:
             SESSION_SECRET,
 
@@ -180,7 +190,6 @@ app.use(
             true,
 
         cookie: {
-
             secure:
                 false,
 
@@ -200,67 +209,131 @@ app.use(
 */
 
 /**
- * Validē Ethereum adresi.
+ * Izveido EVM provider.
  */
-function isValidAddress(address) {
+function getProvider() {
 
-    if (
-        typeof address !== 'string'
-    ) {
-        return false;
+    if (!RPC_URL) {
+        throw new Error(
+            'RPC_URL nav konfigurēts'
+        );
     }
 
-    return ethers.isAddress(
-        address
+    return new ethers.JsonRpcProvider(
+        RPC_URL
     );
 }
 
 /**
- * Validē repository nosaukumu:
+ * Izveido operatora wallet.
  *
- * owner/repository
+ * Šis wallet tiek izmantots tikai:
+ *
+ * - Turbo data-item signing;
+ * - Turbo credit balance lasīšanai.
+ *
+ * Šeit netiek saņemti lietotāja līdzekļi.
  */
-function parseRepoName(repoName) {
+function getOperatorWallet(
+    provider
+) {
 
-    if (
-        typeof repoName !== 'string'
-    ) {
+    if (!OPERATOR_PRIVATE_KEY) {
         throw new Error(
-            'repoName jābūt string'
+            'OPERATOR_PRIVATE_KEY nav konfigurēts'
         );
     }
 
-    const value =
-        repoName.trim();
-
-    const parts =
-        value.split('/');
-
-    if (
-        parts.length !== 2 ||
-        !parts[0] ||
-        !parts[1]
-    ) {
-
-        throw new Error(
-            'Repo jābūt formātā owner/repository'
-        );
-    }
-
-    return {
-
-        owner:
-            parts[0],
-
-        repo:
-            parts[1]
-    };
+    return new ethers.Wallet(
+        OPERATOR_PRIVATE_KEY,
+        provider
+    );
 }
 
 /**
- * Repository hash.
+ * Izveido autentificētu Turbo klientu.
  */
-function getRepositoryHash(repoName) {
+function getTurbo() {
+
+    if (!OPERATOR_PRIVATE_KEY) {
+        throw new Error(
+            'OPERATOR_PRIVATE_KEY nav konfigurēts'
+        );
+    }
+
+    return TurboFactory.authenticated({
+
+        signer:
+            new EthereumSigner(
+                OPERATOR_PRIVATE_KEY
+            ),
+
+        token:
+            TURBO_TOKEN,
+
+        uploadServiceConfig: {
+            url:
+                TURBO_UPLOAD_URL
+        },
+
+        paymentServiceConfig: {
+            url:
+                TURBO_PAYMENT_URL
+        }
+    });
+}
+
+/**
+ * Buffer -> Web ReadableStream.
+ *
+ * Turbo SDK atbalsta Buffer/ReadableStream,
+ * bet mēs izmantojam Web ReadableStream,
+ * lai nebūtu require() ES module režīmā.
+ */
+function bufferToReadableStream(
+    buffer
+) {
+
+    return new ReadableStream({
+
+        start(controller) {
+
+            controller.enqueue(
+                new Uint8Array(
+                    buffer
+                )
+            );
+
+            controller.close();
+        }
+    });
+}
+
+/**
+ * Normalizē kļūdu.
+ */
+function errorMessage(
+    error
+) {
+
+    if (
+        error &&
+        typeof error.message === 'string'
+    ) {
+        return error.message;
+    }
+
+    return String(
+        error
+    );
+}
+
+/**
+ * Aprēķina repo hash tāpat kā smart contract.
+ */
+function getRepositoryHash(
+    repoName
+) {
 
     return ethers.keccak256(
         ethers.AbiCoder
@@ -272,90 +345,9 @@ function getRepositoryHash(repoName) {
     );
 }
 
-/**
- * Izveido Node/Web ReadableStream no Buffer.
- *
- * Turbo SDK uploadFile pieņem stream factory.
- */
-function bufferToReadableStream(
-    buffer
-) {
-
-    return new ReadableStream({
-
-        start(controller) {
-
-            controller.enqueue(
-                new Uint8Array(buffer)
-            );
-
-            controller.close();
-        }
-    });
-}
-
-/**
- * Droši iegūst Turbo token amount.
- *
- * Dažādām SDK versijām atbildes struktūra
- * var atšķirties.
- */
-function extractTurboTokenAmount(
-    costInfo
-) {
-
-    if (
-        !costInfo
-    ) {
-
-        throw new Error(
-            'Turbo costInfo nav saņemts'
-        );
-    }
-
-    /*
-     * Ja konkrētā SDK versija atgriež
-     * tokenAmount.
-     */
-    if (
-        costInfo.tokenAmount !==
-        undefined &&
-        costInfo.tokenAmount !==
-        null
-    ) {
-
-        return BigInt(
-            costInfo.tokenAmount.toString()
-        );
-    }
-
-    /*
-     * Ja SDK atgriež winc,
-     * tas nav tas pats, kas base-eth wei.
-     *
-     * Tāpēc to NEKONVERTĒJAM automātiski
-     * par ETH.
-     */
-    if (
-        costInfo.winc !==
-        undefined &&
-        costInfo.winc !==
-        null
-    ) {
-
-        throw new Error(
-            'Turbo atgrieza winc cenu, nevis tokenAmount. Šī SDK versija/konfigurācija neatgriež tiešu base-eth tokenAmount.'
-        );
-    }
-
-    throw new Error(
-        'Turbo izmaksu rezultātā nav tokenAmount vai winc'
-    );
-}
-
 /*
 |--------------------------------------------------------------------------
-| CONFIG API
+| CONFIG
 |--------------------------------------------------------------------------
 */
 
@@ -384,7 +376,10 @@ app.get(
                 RPC_URL,
 
             arweaveGateway:
-                ARWEAVE_GATEWAY
+                ARWEAVE_GATEWAY,
+
+            turboToken:
+                TURBO_TOKEN
         });
     }
 );
@@ -404,7 +399,6 @@ app.get(
         ) {
 
             return res.status(500).json({
-
                 success:
                     false,
 
@@ -418,7 +412,6 @@ app.get(
         ) {
 
             return res.status(500).json({
-
                 success:
                     false,
 
@@ -465,9 +458,7 @@ app.get(
             code
         } = req.query;
 
-        if (
-            !code
-        ) {
+        if (!code) {
 
             return res.redirect(
                 '/backup.html?error=no_code'
@@ -480,7 +471,6 @@ app.get(
                 await fetch(
                     'https://github.com/login/oauth/access_token',
                     {
-
                         method:
                             'POST',
 
@@ -543,7 +533,6 @@ app.get(
                 await fetch(
                     'https://api.github.com/user',
                     {
-
                         headers: {
 
                             Authorization:
@@ -605,7 +594,6 @@ app.get(
             () => {
 
                 res.json({
-
                     success:
                         true
                 });
@@ -643,7 +631,6 @@ app.get(
         }
 
         res.json({
-
             success:
                 false
         });
@@ -663,9 +650,7 @@ app.get(
         const githubToken =
             req.session.githubToken;
 
-        if (
-            !githubToken
-        ) {
+        if (!githubToken) {
 
             return res.status(401).json({
 
@@ -683,7 +668,6 @@ app.get(
                 await fetch(
                     'https://api.github.com/user/repos?per_page=100&sort=updated',
                     {
-
                         headers: {
 
                             Authorization:
@@ -712,7 +696,7 @@ app.get(
             ) {
 
                 throw new Error(
-                    'GitHub repos atbilde nav masīvs'
+                    'GitHub repo response nav masīvs'
                 );
             }
 
@@ -759,7 +743,9 @@ app.get(
                     false,
 
                 error:
-                    error.message
+                    errorMessage(
+                        error
+                    )
             });
         }
     }
@@ -782,9 +768,7 @@ app.post(
                 walletAddress
             } = req.body;
 
-            if (
-                !repoName
-            ) {
+            if (!repoName) {
 
                 return res.status(400).json({
 
@@ -796,9 +780,7 @@ app.post(
                 });
             }
 
-            if (
-                !walletAddress
-            ) {
+            if (!walletAddress) {
 
                 return res.status(400).json({
 
@@ -810,54 +792,8 @@ app.post(
                 });
             }
 
-            if (
-                !isValidAddress(
-                    walletAddress
-                )
-            ) {
-
-                return res.status(400).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'Nederīga wallet adrese'
-                });
-            }
-
-            if (
-                !RPC_URL
-            ) {
-
-                return res.status(500).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'RPC_URL nav konfigurēts'
-                });
-            }
-
-            if (
-                !NFT_ADDRESS
-            ) {
-
-                return res.status(500).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'NFT_ADDRESS nav konfigurēts'
-                });
-            }
-
             const provider =
-                new ethers.JsonRpcProvider(
-                    RPC_URL
-                );
+                getProvider();
 
             const repoHash =
                 getRepositoryHash(
@@ -872,9 +808,10 @@ app.post(
                 );
 
             const tokenId =
-                await nftContract.repositoryTokens(
-                    repoHash
-                );
+                await nftContract
+                    .repositoryTokens(
+                        repoHash
+                    );
 
             let hasNFT =
                 false;
@@ -896,9 +833,10 @@ app.post(
             ) {
 
                 const nftOwner =
-                    await nftContract.ownerOf(
-                        tokenId
-                    );
+                    await nftContract
+                        .ownerOf(
+                            tokenId
+                        );
 
                 if (
                     nftOwner.toLowerCase() ===
@@ -973,7 +911,9 @@ app.post(
 
                         console.warn(
                             'Registry pārbaudes kļūda:',
-                            error.message
+                            errorMessage(
+                                error
+                            )
                         );
                     }
                 }
@@ -1013,7 +953,9 @@ app.post(
                     false,
 
                 error:
-                    error.message
+                    errorMessage(
+                        error
+                    )
             });
         }
     }
@@ -1024,19 +966,25 @@ app.post(
 | PREPARE BACKUP
 |--------------------------------------------------------------------------
 |
-| ŠIS ENDPOINTS NEVEIC NEVIENU MAKSĀJUMU.
+| SVARĪGĀKĀ IZMAIŅA:
 |
-| Tas:
+| Turbo:
 |
-| 1. pārbauda GitHub autorizāciju;
-| 2. pārbauda NFT;
-| 3. pārbauda NFT owner;
-| 4. pārbauda subscription;
-| 5. pārbauda Registry;
-| 6. nolasa iepriekšējo manifestu;
-| 7. nolasa GitHub failus;
-| 8. salīdzina failus;
-| 9. aprēķina Turbo cenu.
+|     getUploadCosts({
+|         bytes: [totalBytes]
+|     })
+|
+| atgriež:
+|
+|     {
+|         winc,
+|         adjustments,
+|         fees
+|     }
+|
+| Nevis:
+|
+|     tokenAmount
 |
 |--------------------------------------------------------------------------
 */
@@ -1046,18 +994,6 @@ app.post(
     async (req, res) => {
 
         try {
-
-            console.log(
-                '========================================'
-            );
-
-            console.log(
-                'PREPARE BACKUP'
-            );
-
-            console.log(
-                '========================================'
-            );
 
             const {
                 repoName,
@@ -1069,13 +1005,11 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * VALIDATION
+             * VALIDĀCIJA
              * ------------------------------------------------------
              */
 
-            if (
-                !repoName
-            ) {
+            if (!repoName) {
 
                 return res.status(400).json({
 
@@ -1087,9 +1021,7 @@ app.post(
                 });
             }
 
-            if (
-                !walletAddress
-            ) {
+            if (!walletAddress) {
 
                 return res.status(400).json({
 
@@ -1101,11 +1033,7 @@ app.post(
                 });
             }
 
-            if (
-                !isValidAddress(
-                    walletAddress
-                )
-            ) {
+            if (!ethers.isAddress(walletAddress)) {
 
                 return res.status(400).json({
 
@@ -1117,9 +1045,7 @@ app.post(
                 });
             }
 
-            if (
-                !githubToken
-            ) {
+            if (!githubToken) {
 
                 return res.status(401).json({
 
@@ -1131,9 +1057,7 @@ app.post(
                 });
             }
 
-            if (
-                !RPC_URL
-            ) {
+            if (!RPC_URL) {
 
                 return res.status(500).json({
 
@@ -1145,9 +1069,7 @@ app.post(
                 });
             }
 
-            if (
-                !NFT_ADDRESS
-            ) {
+            if (!NFT_ADDRESS) {
 
                 return res.status(500).json({
 
@@ -1159,9 +1081,7 @@ app.post(
                 });
             }
 
-            if (
-                !SUBSCRIPTION_ADDRESS
-            ) {
+            if (!SUBSCRIPTION_ADDRESS) {
 
                 return res.status(500).json({
 
@@ -1173,9 +1093,7 @@ app.post(
                 });
             }
 
-            if (
-                !REGISTRY_ADDRESS
-            ) {
+            if (!REGISTRY_ADDRESS) {
 
                 return res.status(500).json({
 
@@ -1189,33 +1107,12 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * REPO
-             * ------------------------------------------------------
-             */
-
-            const {
-                owner,
-                repo
-            } =
-                parseRepoName(
-                    repoName
-                );
-
-            console.log(
-                'Repository:',
-                repoName
-            );
-
-            /*
-             * ------------------------------------------------------
              * PROVIDER
              * ------------------------------------------------------
              */
 
             const provider =
-                new ethers.JsonRpcProvider(
-                    RPC_URL
-                );
+                getProvider();
 
             /*
              * ------------------------------------------------------
@@ -1227,11 +1124,6 @@ app.post(
                 getRepositoryHash(
                     repoName
                 );
-
-            console.log(
-                'Repository hash:',
-                repoHash
-            );
 
             /*
              * ------------------------------------------------------
@@ -1251,11 +1143,6 @@ app.post(
                     .repositoryTokens(
                         repoHash
                     );
-
-            console.log(
-                'Token ID:',
-                tokenId.toString()
-            );
 
             if (
                 tokenId === 0n
@@ -1283,16 +1170,6 @@ app.post(
                         tokenId
                     );
 
-            console.log(
-                'NFT owner:',
-                nftOwner
-            );
-
-            console.log(
-                'Wallet:',
-                walletAddress
-            );
-
             if (
                 nftOwner.toLowerCase() !==
                 walletAddress.toLowerCase()
@@ -1312,7 +1189,7 @@ app.post(
              * ------------------------------------------------------
              * SUBSCRIPTION
              * ------------------------------------------------------
- */
+             */
 
             const subscriptionContract =
                 new ethers.Contract(
@@ -1326,11 +1203,6 @@ app.post(
                     .isSubscribed(
                         tokenId
                     );
-
-            console.log(
-                'Subscription:',
-                isSubscribed
-            );
 
             if (
                 !isSubscribed
@@ -1365,11 +1237,6 @@ app.post(
                         tokenId
                     );
 
-            console.log(
-                'Registry repo ID:',
-                repoId
-            );
-
             if (
                 repoId ===
                 ethers.ZeroHash
@@ -1399,11 +1266,6 @@ app.post(
                         )
                 );
 
-            console.log(
-                'Backup count:',
-                backupCount
-            );
-
             /*
              * ------------------------------------------------------
              * PREVIOUS MANIFEST
@@ -1413,51 +1275,33 @@ app.post(
             let previousManifest =
                 null;
 
-            let previousManifestURI =
-                null;
-
             if (
                 backupCount > 0
             ) {
 
-                previousManifestURI =
+                const manifestURI =
                     await nftContract
                         .getManifestURI(
                             tokenId
                         );
 
-                console.log(
-                    'Previous manifest URI:',
-                    previousManifestURI
-                );
-
                 if (
-                    previousManifestURI &&
-                    previousManifestURI
-                        .startsWith(
-                            'ar://'
-                        )
+                    manifestURI &&
+                    manifestURI.startsWith(
+                        'ar://'
+                    )
                 ) {
 
                     const txId =
-                        previousManifestURI
-                            .substring(
-                                5
-                            );
-
-                    const manifestURL =
-                        `${ARWEAVE_GATEWAY}/${txId}`;
-
-                    console.log(
-                        'Fetching manifest:',
-                        manifestURL
-                    );
+                        manifestURI.slice(
+                            5
+                        );
 
                     try {
 
                         const manifestResponse =
                             await fetch(
-                                manifestURL
+                                `${ARWEAVE_GATEWAY}/${txId}`
                             );
 
                         if (
@@ -1468,14 +1312,10 @@ app.post(
                                 await manifestResponse
                                     .json();
 
-                            console.log(
-                                'Previous manifest loaded.'
-                            );
-
                         } else {
 
                             console.warn(
-                                'Manifest HTTP status:',
+                                'Manifest gateway HTTP:',
                                 manifestResponse.status
                             );
                         }
@@ -1483,8 +1323,10 @@ app.post(
                     } catch (error) {
 
                         console.warn(
-                            'Manifest fetch kļūda:',
-                            error.message
+                            'Neizdevās iegūt iepriekšējo manifestu:',
+                            errorMessage(
+                                error
+                            )
                         );
                     }
                 }
@@ -1492,33 +1334,42 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * PREVIOUS PATHS
+             * REPO NAME
              * ------------------------------------------------------
              */
 
-            const previousPaths =
-                previousManifest &&
-                previousManifest.paths &&
-                typeof previousManifest.paths ===
-                    'object'
-                    ? previousManifest.paths
-                    : {};
+            const repoParts =
+                repoName.split('/');
 
-            console.log(
-                'Previous manifest paths:',
-                Object.keys(
-                    previousPaths
-                ).length
-            );
+            if (
+                repoParts.length !== 2
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'Repo jābūt owner/repository formātā'
+                });
+            }
+
+            const owner =
+                repoParts[0];
+
+            const repo =
+                repoParts[1];
 
             /*
              * ------------------------------------------------------
-             * GITHUB FILES
+             * CURRENT FILES
              * ------------------------------------------------------
              */
 
             console.log(
-                'Reading GitHub repository...'
+                'Lasām GitHub repo:',
+                repoName
             );
 
             const currentFiles =
@@ -1529,7 +1380,7 @@ app.post(
                 );
 
             console.log(
-                'GitHub files:',
+                'GitHub faili:',
                 currentFiles.length
             );
 
@@ -1549,22 +1400,36 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * COMPARE FILES
+             * PREVIOUS PATHS
+             * ------------------------------------------------------
+             */
+
+            const previousPaths =
+                previousManifest &&
+                previousManifest.paths &&
+                typeof previousManifest.paths ===
+                    'object'
+                    ? previousManifest.paths
+                    : {};
+
+            /*
+             * ------------------------------------------------------
+             * DIFF
              * ------------------------------------------------------
              *
-             * ĻOTI SVARĪGI:
+             * SVARĪGI:
              *
-             * Iepriekšējais kods pārbaudīja tikai:
+             * Iepriekšējā versija salīdzināja tikai
+             * faila eksistenci.
              *
-             * previousFile.id
+             * Tas nozīmē:
              *
-             * Tas nozīmē, ka fails ar mainītu
-             * saturu varēja kļūdaini tikt uzskatīts
-             * par unchanged.
+             * fails mainījās
+             *        ↓
+             * tomēr tika uzskatīts par unchanged.
              *
-             * Tagad salīdzinām SHA-256 hash.
+             * Tagad salīdzinām arī SHA-256 hash.
              *
-             * ------------------------------------------------------
              */
 
             const changedFiles =
@@ -1582,12 +1447,6 @@ app.post(
                     previousPaths[
                         file.path
                     ];
-
-                /*
-                 * Ja iepriekšējā manifestā ir fails
-                 * un mums ir hash metadata,
-                 * salīdzinām hash.
-                 */
 
                 if (
                     previousFile &&
@@ -1611,38 +1470,13 @@ app.post(
                             file.hash
                     };
 
-                    continue;
+                } else {
+
+                    changedFiles.push(
+                        file
+                    );
                 }
-
-                /*
-                 * Backward compatibility:
-                 *
-                 * Vecajos manifestos hash var nebūt.
-                 *
-                 * Tādā gadījumā mēs NEUZSKATĀM failu
-                 * par unchanged.
-                 *
-                 * Tas ir drošāk.
-                 */
-
-                changedFiles.push(
-                    file
-                );
             }
-
-            /*
-             * ------------------------------------------------------
-             * DELETED FILES
-             * ------------------------------------------------------
-             *
-             * Ja fails iepriekšējā manifestā eksistēja,
-             * bet GitHub repo vairs nav, tas netiek
-             * pievienots jaunajam manifestam.
-             *
-             * Tādējādi jaunais manifests reprezentē
-             * pašreizējo repo stāvokli.
-             * ------------------------------------------------------
-             */
 
             /*
              * ------------------------------------------------------
@@ -1660,11 +1494,9 @@ app.post(
                         return (
                             sum +
                             Number(
-                                file.size ||
-                                0
+                                file.size || 0
                             )
                         );
-
                     },
                     0
                 );
@@ -1682,7 +1514,7 @@ app.post(
             );
 
             console.log(
-                'Total changed bytes:',
+                'Changed bytes:',
                 totalBytes
             );
 
@@ -1717,18 +1549,16 @@ app.post(
                     totalBytes:
                         0,
 
-                    costEth:
+                    costWinc:
                         '0',
 
-                    turboCost:
-                        null,
+                    costEth:
+                        '0',
 
                     hasPreviousBackup:
                         backupCount > 0,
 
                     backupCount,
-
-                    previousManifestURI,
 
                     message:
                         'Nav izmaiņu'
@@ -1737,69 +1567,28 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * TURBO PRICE CLIENT
-             * ------------------------------------------------------
-             *
-             * Cena nav jāaprēķina ar operatora privāto
-             * atslēgu.
-             *
-             * getUploadCosts ir payment service
-             * price query.
-             *
+             * TURBO CLIENT
              * ------------------------------------------------------
              */
 
-            console.log(
-                'Creating unauthenticated Turbo client for pricing...'
-            );
-
             const turbo =
-                TurboFactory.unauthenticated({
-
-                    token:
-                        TURBO_TOKEN,
-
-                    uploadServiceConfig: {
-
-                        url:
-                            TURBO_UPLOAD_URL
-                    },
-
-                    paymentServiceConfig: {
-
-                        url:
-                            TURBO_PAYMENT_URL
-                    }
-                });
+                getTurbo();
 
             /*
              * ------------------------------------------------------
-             * GET UPLOAD COSTS
+             * GET UPLOAD COST
              * ------------------------------------------------------
              *
-             * SVARĪGI:
+             * ŠIS IR GALVENAIS LABOJUMS.
              *
-             * bytes MUST be number[].
+             * bytes MUST be array.
              *
-             * Pareizi:
-             *
-             * {
-             *     bytes: [totalBytes]
-             * }
-             *
-             * Nepareizi:
-             *
-             * {
-             *     bytes: totalBytes
-             * }
-             *
-             * Jo SDK iekšēji izmanto .map().
              * ------------------------------------------------------
              */
 
             console.log(
-                'Requesting Turbo upload costs for bytes:',
-                totalBytes
+                'Turbo getUploadCosts bytes:',
+                [totalBytes]
             );
 
             const costs =
@@ -1825,7 +1614,7 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * COST VALIDATION
+             * VALIDATE COST RESPONSE
              * ------------------------------------------------------
              */
 
@@ -1836,7 +1625,7 @@ app.post(
             ) {
 
                 throw new Error(
-                    `Turbo getUploadCosts neatgrieza masīvu. Saņemts: ${typeof costs}`
+                    'Turbo getUploadCosts neatgrieza masīvu'
                 );
             }
 
@@ -1857,75 +1646,150 @@ app.post(
             ) {
 
                 throw new Error(
-                    'Turbo costInfo nav definēts'
+                    'Turbo costInfo nav pieejams'
                 );
             }
 
-            console.log(
-                'Turbo costInfo:'
-            );
-
-            console.dir(
-                costInfo,
-                {
-                    depth:
-                        null
-                }
-            );
-
             /*
              * ------------------------------------------------------
-             * TOKEN AMOUNT
+             * WINC
              * ------------------------------------------------------
              */
 
-            let tokenAmount;
+            if (
+                costInfo.winc ===
+                    undefined ||
+                costInfo.winc ===
+                    null
+            ) {
+
+                throw new Error(
+                    'Turbo getUploadCosts rezultātā nav winc'
+                );
+            }
+
+            const costWinc =
+                BigInt(
+                    String(
+                        costInfo.winc
+                    )
+                );
+
+            /*
+             * ------------------------------------------------------
+             * IMPORTANT:
+             *
+             * winc NAV ETH.
+             *
+             * Tāpēc:
+             *
+             * ethers.formatEther(costWinc)
+             *
+             * IR NEPAREIZI.
+             *
+             * ------------------------------------------------------
+             */
+
+            /*
+             * ------------------------------------------------------
+             * TURBO BALANCE
+             * ------------------------------------------------------
+             *
+             * Pārbaudām operatora Turbo kredītu rezervi.
+             *
+             * Šeit netiek pārsūtīts neviens ETH.
+             *
+             * ------------------------------------------------------
+             */
+
+            let turboBalanceWinc =
+                null;
 
             try {
 
-                tokenAmount =
-                    extractTurboTokenAmount(
-                        costInfo
-                    );
+                const balance =
+                    await turbo.getBalance();
+
+                if (
+                    balance &&
+                    balance.winc !==
+                        undefined
+                ) {
+
+                    turboBalanceWinc =
+                        BigInt(
+                            String(
+                                balance.winc
+                            )
+                        );
+                }
 
             } catch (error) {
 
-                /*
-                 * Šeit negribam izlikties,
-                 * ka winc = wei.
-                 *
-                 * Atgriežam ļoti konkrētu kļūdu.
-                 */
-
-                throw new Error(
-                    `Turbo cenas formāts nav izmantojams kā tiešs ${TURBO_TOKEN} amount: ${error.message}`
+                console.warn(
+                    'Turbo balance pārbaude neizdevās:',
+                    errorMessage(
+                        error
+                    )
                 );
             }
 
             /*
              * ------------------------------------------------------
-             * BASE ETH PRICE
+             * RESERVE CHECK
              * ------------------------------------------------------
              */
 
-            const costEth =
-                ethers.formatEther(
-                    tokenAmount
-                );
+            if (
+                turboBalanceWinc !==
+                    null
+            ) {
 
-            console.log(
-                'Turbo token amount:',
-                tokenAmount.toString()
-            );
+                const requiredWinc =
+                    costWinc +
+                    TURBO_MIN_RESERVE_WINC;
 
-            console.log(
-                'Turbo cost ETH:',
-                costEth
-            );
+                if (
+                    turboBalanceWinc <
+                    requiredWinc
+                ) {
+
+                    return res.status(503).json({
+
+                        success:
+                            false,
+
+                        error:
+                            'Turbo kredītu rezerve nav pietiekama',
+
+                        code:
+                            'INSUFFICIENT_TURBO_CREDITS',
+
+                        costWinc:
+                            costWinc.toString(),
+
+                        turboBalanceWinc:
+                            turboBalanceWinc.toString(),
+
+                        requiredWinc:
+                            requiredWinc.toString(),
+
+                        minReserveWinc:
+                            TURBO_MIN_RESERVE_WINC
+                                .toString()
+                    });
+                }
+            }
 
             /*
              * ------------------------------------------------------
              * RESPONSE
+             * ------------------------------------------------------
+             *
+             * costEth intentionally nav šeit.
+             *
+             * Mēs neizliekamies, ka winc = wei.
+             *
              * ------------------------------------------------------
              */
 
@@ -1964,26 +1828,31 @@ app.post(
 
                 totalBytes,
 
-                costEth,
+                costWinc:
+                    costWinc.toString(),
 
                 turboCost: {
 
                     token:
                         TURBO_TOKEN,
 
-                    tokenAmount:
-                        tokenAmount.toString(),
+                    winc:
+                        costWinc.toString(),
 
                     bytes:
                         totalBytes
                 },
 
+                turboBalanceWinc:
+                    turboBalanceWinc !==
+                        null
+                        ? turboBalanceWinc.toString()
+                        : null,
+
                 hasPreviousBackup:
                     backupCount > 0,
 
-                backupCount,
-
-                previousManifestURI
+                backupCount
             });
 
         } catch (error) {
@@ -1994,10 +1863,6 @@ app.post(
 
             console.error(
                 'BACKUP PREPARE ERROR'
-            );
-
-            console.error(
-                '========================================'
             );
 
             console.error(
@@ -2014,8 +1879,9 @@ app.post(
                     false,
 
                 error:
-                    error.message ||
-                    'Nezināma kļūda'
+                    errorMessage(
+                        error
+                    )
             });
         }
     }
@@ -2026,15 +1892,24 @@ app.post(
 | EXECUTE BACKUP
 |--------------------------------------------------------------------------
 |
-| Šeit tiek veikts:
+| SVARĪGI:
 |
-|   Treasury.payTurbo()
+| Šeit NAV:
 |
-| Operatora EOA:
+|     Treasury.payTurbo()
 |
-|   tikai izsauc Treasury kontraktu.
+| Šeit NAV:
 |
-| Operatora EOA nav lietotāja Treasury.
+|     Treasury -> Operator EOA
+|
+| Šeit NAV:
+|
+|     turbo.topUpWithTokens()
+|
+| Backup izmanto jau esošos Turbo kredītus.
+|
+| Lietotāja maksājums uz Treasury ir atsevišķa
+| ekonomiskā plūsma.
 |
 |--------------------------------------------------------------------------
 */
@@ -2046,21 +1921,13 @@ app.post(
         try {
 
             const {
-
                 repoName,
-
                 files,
-
                 unchangedFiles,
-
                 tokenId,
-
-                costEth,
-
+                costWinc,
                 walletAddress
-
-            } =
-                req.body;
+            } = req.body;
 
             /*
              * ------------------------------------------------------
@@ -2068,9 +1935,7 @@ app.post(
              * ------------------------------------------------------
              */
 
-            if (
-                !repoName
-            ) {
+            if (!repoName) {
 
                 return res.status(400).json({
 
@@ -2082,9 +1947,7 @@ app.post(
                 });
             }
 
-            if (
-                !walletAddress
-            ) {
+            if (!walletAddress) {
 
                 return res.status(400).json({
 
@@ -2097,7 +1960,7 @@ app.post(
             }
 
             if (
-                !isValidAddress(
+                !ethers.isAddress(
                     walletAddress
                 )
             ) {
@@ -2159,9 +2022,9 @@ app.post(
             }
 
             if (
-                costEth ===
+                costWinc ===
                     undefined ||
-                costEth ===
+                costWinc ===
                     null
             ) {
 
@@ -2171,138 +2034,7 @@ app.post(
                         false,
 
                     error:
-                        'Nav costEth'
-                });
-            }
-
-            if (
-                !RPC_URL
-            ) {
-
-                return res.status(500).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'RPC_URL nav konfigurēts'
-                });
-            }
-
-            if (
-                !OPERATOR_PRIVATE_KEY
-            ) {
-
-                return res.status(500).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'OPERATOR_PRIVATE_KEY nav konfigurēts'
-                });
-            }
-
-            if (
-                !TREASURY_ADDRESS
-            ) {
-
-                return res.status(500).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'TREASURY_ADDRESS nav konfigurēts'
-                });
-            }
-
-            /*
-             * ------------------------------------------------------
-             * PROVIDER
-             * ------------------------------------------------------
-             */
-
-            const provider =
-                new ethers.JsonRpcProvider(
-                    RPC_URL
-                );
-
-            /*
-             * ------------------------------------------------------
-             * OPERATOR
-             * ------------------------------------------------------
-             */
-
-            const operatorWallet =
-                new ethers.Wallet(
-                    OPERATOR_PRIVATE_KEY,
-                    provider
-                );
-
-            console.log(
-                'Operator:',
-                operatorWallet.address
-            );
-
-            /*
-             * ------------------------------------------------------
-             * VERIFY TREASURY OPERATOR
-             * ------------------------------------------------------
-             *
-             * Treasury kontraktā operator ir immutable.
-             *
-             * Šeit pārbaudām, ka servera private key
-             * tiešām atbilst deploy laikā ievadītajam operator.
-             * ------------------------------------------------------
-             */
-
-            const operatorAbi = [
-
-                "function operator() external view returns (address)",
-
-                "function turboPaymentAddress() external view returns (address)"
-            ];
-
-            const treasuryRead =
-                new ethers.Contract(
-                    TREASURY_ADDRESS,
-                    [
-                        ...TREASURY_ABI,
-                        ...operatorAbi
-                    ],
-                    provider
-                );
-
-            const configuredOperator =
-                await treasuryRead.operator();
-
-            const turboPaymentAddress =
-                await treasuryRead
-                    .turboPaymentAddress();
-
-            console.log(
-                'Treasury configured operator:',
-                configuredOperator
-            );
-
-            console.log(
-                'Treasury Turbo payment address:',
-                turboPaymentAddress
-            );
-
-            if (
-                configuredOperator.toLowerCase() !==
-                operatorWallet.address.toLowerCase()
-            ) {
-
-                return res.status(500).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'OPERATOR_PRIVATE_KEY neatbilst Treasury operator adresei'
+                        'Nav costWinc'
                 });
             }
 
@@ -2312,268 +2044,293 @@ app.post(
              * ------------------------------------------------------
              */
 
-            let costWei;
-
-            try {
-
-                costWei =
-                    ethers.parseEther(
-                        String(
-                            costEth
-                        )
-                    );
-
-            } catch (error) {
-
-                return res.status(400).json({
-
-                    success:
-                        false,
-
-                    error:
-                        `Nederīgs costEth: ${error.message}`
-                });
-            }
-
-            if (
-                costWei <= 0n
-            ) {
-
-                return res.status(400).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'costEth jābūt > 0'
-                });
-            }
-
-            /*
-             * ------------------------------------------------------
-             * TREASURY BALANCE
-             * ------------------------------------------------------
-             */
-
-            const treasuryBalance =
-                await treasuryRead.balance();
-
-            console.log(
-                'Treasury balance:',
-                ethers.formatEther(
-                    treasuryBalance
-                )
-            );
-
-            console.log(
-                'Required:',
-                ethers.formatEther(
-                    costWei
-                )
-            );
-
-            if (
-                treasuryBalance <
-                costWei
-            ) {
-
-                return res.status(400).json({
-
-                    success:
-                        false,
-
-                    error:
-                        'Treasury nav pietiekami līdzekļu'
-                });
-            }
-
-            /*
-             * ------------------------------------------------------
-             * PAYMENT ID
-             * ------------------------------------------------------
-             */
-
-            const paymentId =
-                ethers.keccak256(
-
-                    ethers.solidityPacked(
-
-                        [
-                            'string',
-                            'address',
-                            'uint256',
-                            'uint256'
-                        ],
-
-                        [
-                            repoName,
-
-                            walletAddress,
-
-                            BigInt(
-                                tokenId
-                            ),
-
-                            BigInt(
-                                Date.now()
-                            )
-                        ]
+            const requiredWinc =
+                BigInt(
+                    String(
+                        costWinc
                     )
                 );
 
-            console.log(
-                'Payment ID:',
-                paymentId
-            );
+            /*
+             * ------------------------------------------------------
+             * PROVIDER
+             * ------------------------------------------------------
+             */
+
+            const provider =
+                getProvider();
 
             /*
              * ------------------------------------------------------
-             * TREASURY PAYMENT
+             * NFT REVALIDATION
              * ------------------------------------------------------
              *
-             * SVARĪGI:
+             * Nekad neuzticamies klienta:
              *
-             * Operatora EOA NEŅEM Treasury ETH.
+             *     tokenId
+             *     costWinc
+             *     repoName
              *
-             * Operatora EOA tikai izsauc:
-             *
-             *   Treasury.payTurbo()
-             *
-             * Treasury pats nosūta ETH uz:
-             *
-             *   turboPaymentAddress
+             * bez pārbaudes.
              *
              * ------------------------------------------------------
              */
 
-            const treasuryWrite =
+            if (
+                !NFT_ADDRESS
+            ) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'NFT_ADDRESS nav konfigurēts'
+                });
+            }
+
+            if (
+                !SUBSCRIPTION_ADDRESS
+            ) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'SUBSCRIPTION_ADDRESS nav konfigurēts'
+                });
+            }
+
+            if (
+                !REGISTRY_ADDRESS
+            ) {
+
+                return res.status(500).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'REGISTRY_ADDRESS nav konfigurēts'
+                });
+            }
+
+            const nftContract =
                 new ethers.Contract(
-                    TREASURY_ADDRESS,
-                    TREASURY_ABI,
-                    operatorWallet
+                    NFT_ADDRESS,
+                    NFT_ABI,
+                    provider
                 );
 
-            console.log(
-                'Izsauc Treasury.payTurbo()...'
-            );
+            const repoHash =
+                getRepositoryHash(
+                    repoName
+                );
 
-            const payTx =
-                await treasuryWrite
-                    .payTurbo(
-                        costWei,
-                        paymentId
+            const onChainTokenId =
+                await nftContract
+                    .repositoryTokens(
+                        repoHash
                     );
 
-            console.log(
-                'Treasury payment tx:',
-                payTx.hash
-            );
+            if (
+                onChainTokenId ===
+                0n
+            ) {
 
-            const payReceipt =
-                await payTx.wait();
+                return res.status(400).json({
 
-            console.log(
-                'Treasury maksājums apstiprināts:',
-                payReceipt.hash
-            );
+                    success:
+                        false,
 
-            /*
-             * ------------------------------------------------------
-             * TURBO CLIENT
-             * ------------------------------------------------------
-             *
-             * Šeit tiek izmantots operator signer tikai
-             * datu item parakstīšanai.
-             *
-             * Mēs NEIZSAUCAM topUpWithTokens().
-             *
-             * ------------------------------------------------------
-             */
-
-            const signer =
-                new EthereumSigner(
-                    OPERATOR_PRIVATE_KEY
-                );
-
-            const turbo =
-                TurboFactory.authenticated({
-
-                    signer,
-
-                    token:
-                        TURBO_TOKEN,
-
-                    uploadServiceConfig: {
-
-                        url:
-                            TURBO_UPLOAD_URL
-                    },
-
-                    paymentServiceConfig: {
-
-                        url:
-                            TURBO_PAYMENT_URL
-                    }
+                    error:
+                        'Repo NFT vairs nepastāv'
                 });
+            }
 
-            /*
-             * ------------------------------------------------------
-             * TURBO BALANCE
-             * ------------------------------------------------------
-             */
+            if (
+                onChainTokenId.toString() !==
+                String(tokenId)
+            ) {
 
-            let turboBalanceBefore =
-                null;
+                return res.status(409).json({
 
-            try {
+                    success:
+                        false,
 
-                const balance =
-                    await turbo.getBalance();
-
-                console.log(
-                    'Turbo balance before:',
-                    balance
-                );
-
-                if (
-                    balance &&
-                    balance.winc !==
-                        undefined
-                ) {
-
-                    turboBalanceBefore =
-                        balance.winc.toString();
-                }
-
-            } catch (error) {
-
-                console.warn(
-                    'Turbo balance pārbaude neizdevās:',
-                    error.message
-                );
+                    error:
+                        'tokenId vairs neatbilst repo'
+                });
             }
 
             /*
              * ------------------------------------------------------
-             * IMPORTANT PAYMENT MODEL WARNING
-             * ------------------------------------------------------
-             *
-             * Treasury payment jau ir veikts.
-             *
-             * Tāpēc:
-             *
-             * turbo.topUpWithTokens()
-             *
-             * ŠEIT NEDRĪKST IZSAUKT.
-             *
+             * OWNER
              * ------------------------------------------------------
              */
+
+            const nftOwner =
+                await nftContract
+                    .ownerOf(
+                        onChainTokenId
+                    );
+
+            if (
+                nftOwner.toLowerCase() !==
+                walletAddress.toLowerCase()
+            ) {
+
+                return res.status(403).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'NFT nepieder wallet adresei'
+                });
+            }
+
+            /*
+             * ------------------------------------------------------
+             * SUBSCRIPTION
+             * ------------------------------------------------------
+             */
+
+            const subscriptionContract =
+                new ethers.Contract(
+                    SUBSCRIPTION_ADDRESS,
+                    SUBSCRIPTION_ABI,
+                    provider
+                );
+
+            const isSubscribed =
+                await subscriptionContract
+                    .isSubscribed(
+                        onChainTokenId
+                    );
+
+            if (
+                !isSubscribed
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'Abonements vairs nav aktīvs'
+                });
+            }
+
+            /*
+             * ------------------------------------------------------
+             * REGISTRY
+             * ------------------------------------------------------
+             */
+
+            const registryContract =
+                new ethers.Contract(
+                    REGISTRY_ADDRESS,
+                    REGISTRY_ABI,
+                    provider
+                );
+
+            const repoId =
+                await registryContract
+                    .getRepositoryByNFT(
+                        onChainTokenId
+                    );
+
+            if (
+                repoId ===
+                ethers.ZeroHash
+            ) {
+
+                return res.status(400).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'Repo nav reģistrēts Registry'
+                });
+            }
+
+            /*
+             * ------------------------------------------------------
+             * TURBO
+             * ------------------------------------------------------
+ */
+
+            const turbo =
+                getTurbo();
+
+            /*
+             * ------------------------------------------------------
+             * CURRENT TURBO BALANCE
+             * ------------------------------------------------------
+ */
+
+            const turboBalance =
+                await turbo.getBalance();
+
+            if (
+                !turboBalance ||
+                turboBalance.winc ===
+                    undefined
+            ) {
+
+                throw new Error(
+                    'Turbo getBalance neatgrieza winc'
+                );
+            }
+
+            const availableWinc =
+                BigInt(
+                    String(
+                        turboBalance.winc
+                    )
+                );
+
+            /*
+             * ------------------------------------------------------
+             * CHECK BALANCE
+             * ------------------------------------------------------
+ */
+
+            if (
+                availableWinc <
+                requiredWinc
+            ) {
+
+                return res.status(503).json({
+
+                    success:
+                        false,
+
+                    error:
+                        'Turbo kredītu nepietiek backup izpildei',
+
+                    code:
+                        'INSUFFICIENT_TURBO_CREDITS',
+
+                    requiredWinc:
+                        requiredWinc.toString(),
+
+                    availableWinc:
+                        availableWinc.toString()
+                });
+            }
 
             /*
              * ------------------------------------------------------
              * UPLOAD FILES
              * ------------------------------------------------------
-             */
+ */
 
             const uploadResults =
                 [];
@@ -2597,7 +2354,7 @@ app.post(
                 ) {
 
                     throw new Error(
-                        `Failam nav content: ${file.path}`
+                        `Backup failam nav content: ${file.path}`
                     );
                 }
 
@@ -2610,11 +2367,6 @@ app.post(
                 console.log(
                     'Augšupielādē:',
                     file.path
-                );
-
-                console.log(
-                    'Size:',
-                    fileBuffer.length
                 );
 
                 const result =
@@ -2663,7 +2415,27 @@ app.post(
                                         'Content-Type',
 
                                     value:
-                                        'application/octet-stream'
+                                        getContentType(
+                                            file.path
+                                        )
+                                },
+
+                                {
+                                    name:
+                                        'Content-SHA256',
+
+                                    value:
+                                        file.hash ||
+                                        crypto
+                                            .createHash(
+                                                'sha256'
+                                            )
+                                            .update(
+                                                fileBuffer
+                                            )
+                                            .digest(
+                                                'hex'
+                                            )
                                 },
 
                                 {
@@ -2688,7 +2460,7 @@ app.post(
                 ) {
 
                     throw new Error(
-                        `Turbo upload neatgrieza transaction ID failam ${file.path}`
+                        `Turbo neatgrieza transaction ID failam: ${file.path}`
                     );
                 }
 
@@ -2704,7 +2476,17 @@ app.post(
                         fileBuffer.length,
 
                     hash:
-                        file.hash
+                        file.hash ||
+                        crypto
+                            .createHash(
+                                'sha256'
+                            )
+                            .update(
+                                fileBuffer
+                            )
+                            .digest(
+                                'hex'
+                            )
                 });
             }
 
@@ -2722,8 +2504,7 @@ app.post(
                 version:
                     '0.2.0',
 
-                paths:
-                    {},
+                paths: {},
 
                 metadata: {
 
@@ -2741,64 +2522,9 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * INDEX
-             * ------------------------------------------------------
-             */
-
-            let indexPath =
-                null;
-
-            if (
-                uploadResults.some(
-                    file =>
-                        file.path ===
-                        'README.md'
-                )
-            ) {
-
-                indexPath =
-                    'README.md';
-
-            } else {
-
-                const allPaths =
-                    [
-                        ...uploadResults
-                            .map(
-                                file =>
-                                    file.path
-                            ),
-
-                        ...Object.keys(
-                            unchangedFiles
-                        )
-                    ];
-
-                if (
-                    allPaths.length > 0
-                ) {
-
-                    indexPath =
-                        allPaths[0];
-                }
-            }
-
-            if (
-                indexPath
-            ) {
-
-                manifest.index = {
-
-                    path:
-                        indexPath
-                };
-            }
-
-            /*
-             * ------------------------------------------------------
              * NEW FILES
              * ------------------------------------------------------
-             */
+ */
 
             for (
                 const file
@@ -2818,7 +2544,7 @@ app.post(
              * ------------------------------------------------------
              * UNCHANGED FILES
              * ------------------------------------------------------
-             */
+ */
 
             for (
                 const [
@@ -2847,32 +2573,54 @@ app.post(
 
             /*
              * ------------------------------------------------------
-             * MANIFEST BUFFER
+             * INDEX
              * ------------------------------------------------------
-             */
+ */
 
-            const manifestBuffer =
-                Buffer.from(
-
-                    JSON.stringify(
-                        manifest,
-                        null,
-                        2
-                    ),
-
-                    'utf8'
+            const manifestPaths =
+                Object.keys(
+                    manifest.paths
                 );
 
-            console.log(
-                'Manifest size:',
-                manifestBuffer.length
-            );
+            if (
+                manifestPaths.length > 0
+            ) {
+
+                if (
+                    manifest.paths[
+                        'README.md'
+                    ]
+                ) {
+
+                    manifest.index = {
+
+                        path:
+                            'README.md'
+                    };
+
+                } else {
+
+                    manifest.index = {
+
+                        path:
+                            manifestPaths[0]
+                    };
+                }
+            }
 
             /*
              * ------------------------------------------------------
-             * MANIFEST UPLOAD
+             * MANIFEST BUFFER
              * ------------------------------------------------------
-             */
+ */
+
+            const manifestBuffer =
+                Buffer.from(
+                    JSON.stringify(
+                        manifest
+                    ),
+                    'utf8'
+                );
 
             console.log(
                 'Augšupielādē manifestu...'
@@ -2949,44 +2697,45 @@ app.post(
             ) {
 
                 throw new Error(
-                    'Turbo manifest upload neatgrieza transaction ID'
+                    'Turbo neatgrieza manifest transaction ID'
                 );
             }
 
             /*
              * ------------------------------------------------------
-             * TURBO BALANCE AFTER
+             * FINAL BALANCE
              * ------------------------------------------------------
-             */
+ */
 
             let turboBalanceAfter =
                 null;
 
             try {
 
-                const balance =
+                const after =
                     await turbo.getBalance();
 
-                console.log(
-                    'Turbo balance after:',
-                    balance
-                );
-
                 if (
-                    balance &&
-                    balance.winc !==
+                    after &&
+                    after.winc !==
                         undefined
                 ) {
 
                     turboBalanceAfter =
-                        balance.winc.toString();
+                        BigInt(
+                            String(
+                                after.winc
+                            )
+                        );
                 }
 
             } catch (error) {
 
                 console.warn(
                     'Turbo balance pēc upload neizdevās:',
-                    error.message
+                    errorMessage(
+                        error
+                    )
                 );
             }
 
@@ -2994,7 +2743,7 @@ app.post(
              * ------------------------------------------------------
              * RESPONSE
              * ------------------------------------------------------
-             */
+ */
 
             return res.json({
 
@@ -3007,21 +2756,17 @@ app.post(
                 uploadedFiles:
                     uploadResults,
 
-                costEth:
-                    String(
-                        costEth
-                    ),
+                costWinc:
+                    requiredWinc.toString(),
 
-                paymentId,
+                turboBalanceBefore:
+                    availableWinc.toString(),
 
-                treasuryPaymentTx:
-                    payTx.hash,
-
-                turboPaymentAddress,
-
-                turboBalanceBefore,
-
-                turboBalanceAfter
+                turboBalanceAfter:
+                    turboBalanceAfter !==
+                        null
+                        ? turboBalanceAfter.toString()
+                        : null
             });
 
         } catch (error) {
@@ -3032,10 +2777,6 @@ app.post(
 
             console.error(
                 'BACKUP EXECUTE ERROR'
-            );
-
-            console.error(
-                '========================================'
             );
 
             console.error(
@@ -3052,12 +2793,153 @@ app.post(
                     false,
 
                 error:
-                    error.message ||
-                    'Nezināma kļūda'
+                    errorMessage(
+                        error
+                    )
             });
         }
     }
 );
+
+/*
+|--------------------------------------------------------------------------
+| CONTENT TYPE
+|--------------------------------------------------------------------------
+*/
+
+function getContentType(
+    filePath
+) {
+
+    const lower =
+        filePath
+            .toLowerCase();
+
+    if (
+        lower.endsWith(
+            '.json'
+        )
+    ) {
+
+        return 'application/json';
+    }
+
+    if (
+        lower.endsWith(
+            '.html'
+        )
+    ) {
+
+        return 'text/html';
+    }
+
+    if (
+        lower.endsWith(
+            '.css'
+        )
+    ) {
+
+        return 'text/css';
+    }
+
+    if (
+        lower.endsWith(
+            '.js'
+        ) ||
+        lower.endsWith(
+            '.mjs'
+        )
+    ) {
+
+        return 'application/javascript';
+    }
+
+    if (
+        lower.endsWith(
+            '.ts'
+        )
+    ) {
+
+        return 'text/plain';
+    }
+
+    if (
+        lower.endsWith(
+            '.md'
+        )
+    ) {
+
+        return 'text/markdown';
+    }
+
+    if (
+        lower.endsWith(
+            '.xml'
+        )
+    ) {
+
+        return 'application/xml';
+    }
+
+    if (
+        lower.endsWith(
+            '.svg'
+        )
+    ) {
+
+        return 'image/svg+xml';
+    }
+
+    if (
+        lower.endsWith(
+            '.png'
+        )
+    ) {
+
+        return 'image/png';
+    }
+
+    if (
+        lower.endsWith(
+            '.jpg'
+        ) ||
+        lower.endsWith(
+            '.jpeg'
+        )
+    ) {
+
+        return 'image/jpeg';
+    }
+
+    if (
+        lower.endsWith(
+            '.gif'
+        )
+    ) {
+
+        return 'image/gif';
+    }
+
+    if (
+        lower.endsWith(
+            '.webp'
+        )
+    ) {
+
+        return 'image/webp';
+    }
+
+    if (
+        lower.endsWith(
+            '.pdf'
+        )
+    ) {
+
+        return 'application/pdf';
+    }
+
+    return 'application/octet-stream';
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -3075,14 +2957,9 @@ async function getRepoFiles(
     const files =
         [];
 
-    let url;
-
-    if (
+    const encodedPath =
         repoPath
-    ) {
-
-        const encodedPath =
-            repoPath
+            ? repoPath
                 .split('/')
                 .map(
                     part =>
@@ -3090,27 +2967,18 @@ async function getRepoFiles(
                             part
                         )
                 )
-                .join('/');
+                .join('/')
+            : '';
 
-        url =
-            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`;
-
-    } else {
-
-        url =
-            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents`;
-    }
-
-    console.log(
-        'GitHub contents:',
-        url
-    );
+    const url =
+        encodedPath
+            ? `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}`
+            : `https://api.github.com/repos/${owner}/${repo}/contents`;
 
     const response =
         await fetch(
             url,
             {
-
                 headers: {
 
                     Authorization:
@@ -3129,51 +2997,27 @@ async function getRepoFiles(
         !response.ok
     ) {
 
-        let body = '';
-
-        try {
-
-            body =
-                await response.text();
-
-        } catch {
-
-            body =
-                '';
-        }
+        const text =
+            await response.text();
 
         throw new Error(
-            `GitHub API kļūda: ${response.status}${body ? ` - ${body}` : ''}`
+            `GitHub API kļūda: ${response.status} ${text}`
         );
     }
 
     const contents =
         await response.json();
 
+    /*
+     * GitHub var atgriezt object,
+     * ja pieprasītais path ir viens fails.
+     */
+
     if (
         !Array.isArray(
             contents
         )
     ) {
-
-        /*
-         * GitHub var atgriezt vienu file objektu,
-         * nevis array.
-         */
-
-        if (
-            contents &&
-            contents.type ===
-                'file'
-        ) {
-
-            return [
-                await downloadGithubFile(
-                    githubToken,
-                    contents
-                )
-            ];
-        }
 
         return files;
     }
@@ -3187,44 +3031,112 @@ async function getRepoFiles(
          * ------------------------------------------------------
          * FILE
          * ------------------------------------------------------
-         */
+ */
 
         if (
             item.type ===
             'file'
         ) {
 
-            if (
+            const size =
                 Number(
                     item.size ||
                     0
-                ) >
-                MAX_FILE_SIZE
+                );
+
+            /*
+             * GitHub Contents API
+             * failiem līdz 100 MB.
+             */
+
+            if (
+                size >
+                104857600
             ) {
 
                 console.warn(
-                    'Fails pārsniedz 100 MB un tiek izlaists:',
+                    'Fails pārsniedz 100 MB:',
                     item.path
                 );
 
                 continue;
             }
 
-            const file =
-                await downloadGithubFile(
-                    githubToken,
-                    item
+            if (
+                !item.download_url
+            ) {
+
+                console.warn(
+                    'Failam nav download_url:',
+                    item.path
                 );
 
-            files.push(
-                file
-            );
+                continue;
+            }
+
+            const fileResponse =
+                await fetch(
+                    item.download_url,
+                    {
+                        headers: {
+
+                            Authorization:
+                                `Bearer ${githubToken}`,
+
+                            Accept:
+                                'application/octet-stream'
+                        }
+                    }
+                );
+
+            if (
+                !fileResponse.ok
+            ) {
+
+                throw new Error(
+                    `GitHub faila lejupielādes kļūda: ${item.path} (${fileResponse.status})`
+                );
+            }
+
+            const fileBuffer =
+                Buffer.from(
+                    await fileResponse
+                        .arrayBuffer()
+                );
+
+            const hash =
+                crypto
+                    .createHash(
+                        'sha256'
+                    )
+                    .update(
+                        fileBuffer
+                    )
+                    .digest(
+                        'hex'
+                    );
+
+            files.push({
+
+                path:
+                    item.path,
+
+                size:
+                    fileBuffer.length,
+
+                content:
+                    fileBuffer.toString(
+                        'base64'
+                    ),
+
+                hash
+            });
 
         /*
          * ------------------------------------------------------
          * DIRECTORY
          * ------------------------------------------------------
-         */
+ */
 
         } else if (
             item.type ===
@@ -3250,100 +3162,99 @@ async function getRepoFiles(
 
 /*
 |--------------------------------------------------------------------------
-| DOWNLOAD GITHUB FILE
+| TURBO STATUS
 |--------------------------------------------------------------------------
 */
 
-async function downloadGithubFile(
-    githubToken,
-    item
-) {
+app.get(
+    '/api/turbo/status',
+    async (req, res) => {
 
-    if (
-        !item.download_url
-    ) {
+        try {
 
-        throw new Error(
-            `Failam nav download_url: ${item.path}`
-        );
-    }
+            if (
+                !OPERATOR_PRIVATE_KEY
+            ) {
 
-    const response =
-        await fetch(
-            item.download_url,
-            {
+                return res.status(500).json({
 
-                headers: {
+                    success:
+                        false,
 
-                    Authorization:
-                        `Bearer ${githubToken}`,
-
-                    Accept:
-                        'application/vnd.github.v3.raw',
-
-                    'X-GitHub-Api-Version':
-                        '2022-11-28'
-                }
+                    error:
+                        'OPERATOR_PRIVATE_KEY nav konfigurēts'
+                });
             }
-        );
 
-    if (
-        !response.ok
-    ) {
+            const turbo =
+                getTurbo();
 
-        throw new Error(
-            `GitHub faila lejupielādes kļūda: ${item.path} (${response.status})`
-        );
-    }
+            const balance =
+                await turbo.getBalance();
 
-    const fileBuffer =
-        Buffer.from(
-            await response.arrayBuffer()
-        );
+            const winc =
+                balance &&
+                balance.winc !==
+                    undefined
+                    ? BigInt(
+                        String(
+                            balance.winc
+                        )
+                    )
+                    : null;
 
-    if (
-        fileBuffer.length >
-        MAX_FILE_SIZE
-    ) {
+            const operatorWallet =
+                new ethers.Wallet(
+                    OPERATOR_PRIVATE_KEY
+                );
 
-        console.warn(
-            'Fails pēc lejupielādes pārsniedz 100 MB:',
-            item.path
-        );
+            res.json({
 
-        throw new Error(
-            `Fails pārsniedz 100 MB limitu: ${item.path}`
-        );
-    }
+                success:
+                    true,
 
-    const hash =
-        crypto
-            .createHash(
-                'sha256'
-            )
-            .update(
-                fileBuffer
-            )
-            .digest(
-                'hex'
+                operatorAddress:
+                    operatorWallet.address,
+
+                token:
+                    TURBO_TOKEN,
+
+                winc:
+                    winc !== null
+                        ? winc.toString()
+                        : null,
+
+                minReserveWinc:
+                    TURBO_MIN_RESERVE_WINC
+                        .toString(),
+
+                uploadService:
+                    TURBO_UPLOAD_URL,
+
+                paymentService:
+                    TURBO_PAYMENT_URL
+            });
+
+        } catch (error) {
+
+            console.error(
+                'Turbo status kļūda:',
+                error
             );
 
-    return {
+            res.status(500).json({
 
-        path:
-            item.path,
+                success:
+                    false,
 
-        size:
-            fileBuffer.length,
-
-        content:
-            fileBuffer.toString(
-                'base64'
-            ),
-
-        hash
-    };
-}
+                error:
+                    errorMessage(
+                        error
+                    )
+            });
+        }
+    }
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -3358,17 +3269,14 @@ app.get(
         let operatorAddress =
             null;
 
-        let treasuryOperator =
-            null;
-
-        let turboPaymentAddress =
+        let turboBalanceWinc =
             null;
 
         /*
          * ------------------------------------------------------
          * OPERATOR ADDRESS
          * ------------------------------------------------------
-         */
+ */
 
         if (
             OPERATOR_PRIVATE_KEY
@@ -3393,50 +3301,43 @@ app.get(
 
         /*
          * ------------------------------------------------------
-         * TREASURY INFO
+         * TURBO BALANCE
          * ------------------------------------------------------
  */
 
         if (
-            RPC_URL &&
-            TREASURY_ADDRESS
+            OPERATOR_PRIVATE_KEY
         ) {
 
             try {
 
-                const provider =
-                    new ethers.JsonRpcProvider(
-                        RPC_URL
-                    );
+                const turbo =
+                    getTurbo();
 
-                const treasury =
-                    new ethers.Contract(
+                const balance =
+                    await turbo.getBalance();
 
-                        TREASURY_ADDRESS,
+                if (
+                    balance &&
+                    balance.winc !==
+                        undefined
+                ) {
 
-                        [
-                            "function operator() external view returns (address)",
-
-                            "function turboPaymentAddress() external view returns (address)",
-
-                            "function balance() external view returns (uint256)"
-                        ],
-
-                        provider
-                    );
-
-                treasuryOperator =
-                    await treasury.operator();
-
-                turboPaymentAddress =
-                    await treasury
-                        .turboPaymentAddress();
+                    turboBalanceWinc =
+                        BigInt(
+                            String(
+                                balance.winc
+                            )
+                        ).toString();
+                }
 
             } catch (error) {
 
                 console.warn(
-                    'Health Treasury read kļūda:',
-                    error.message
+                    'Health Turbo balance kļūda:',
+                    errorMessage(
+                        error
+                    )
                 );
             }
         }
@@ -3445,7 +3346,7 @@ app.get(
          * ------------------------------------------------------
          * RESPONSE
          * ------------------------------------------------------
-         */
+ */
 
         res.json({
 
@@ -3464,18 +3365,6 @@ app.get(
 
                 treasury:
                     !!TREASURY_ADDRESS,
-
-                treasuryOperator,
-
-                operatorMatchesTreasury:
-                    !!(
-                        operatorAddress &&
-                        treasuryOperator &&
-                        operatorAddress.toLowerCase() ===
-                            treasuryOperator.toLowerCase()
-                    ),
-
-                turboPaymentAddress,
 
                 nft:
                     !!NFT_ADDRESS,
@@ -3500,7 +3389,9 @@ app.get(
                     TURBO_UPLOAD_URL,
 
                 turboPayment:
-                    TURBO_PAYMENT_URL
+                    TURBO_PAYMENT_URL,
+
+                turboBalanceWinc
             }
         });
     }
@@ -3600,6 +3491,11 @@ app.listen(
         console.log(
             'TURBO_PAYMENT_URL:',
             TURBO_PAYMENT_URL
+        );
+
+        console.log(
+            'TURBO_MIN_RESERVE_WINC:',
+            TURBO_MIN_RESERVE_WINC.toString()
         );
 
         console.log(
