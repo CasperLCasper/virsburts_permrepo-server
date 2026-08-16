@@ -28,7 +28,6 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const TURBO_TOKEN = process.env.TURBO_TOKEN || 'base-eth';
 const TURBO_UPLOAD_URL = process.env.TURBO_UPLOAD_URL || 'https://upload.services.ar-io.dev';
 const TURBO_PAYMENT_URL = process.env.TURBO_PAYMENT_URL || 'https://payment.services.ar-io.dev';
-const TURBO_MIN_RESERVE_WINC = process.env.TURBO_MIN_RESERVE_WINC ? BigInt(process.env.TURBO_MIN_RESERVE_WINC) : 0n;
 
 const NFT_ABI = [
     "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
@@ -127,7 +126,6 @@ app.get('/api/github/callback', async (req, res) => {
         const tokenData = await tokenResponse.json();
         
         if (!tokenData.access_token) {
-            console.error('GitHub token kļūda:', tokenData);
             return res.redirect('/backup.html?error=token');
         }
         
@@ -173,7 +171,6 @@ app.get('/api/github/repos', async (req, res) => {
         
         if (!response.ok) throw new Error(`GitHub API kļūda: ${response.status}`);
         const repos = await response.json();
-        if (!Array.isArray(repos)) throw new Error('GitHub repo response nav masīvs');
         
         const repoList = repos.map(repo => ({
             name: repo.full_name,
@@ -185,7 +182,6 @@ app.get('/api/github/repos', async (req, res) => {
         
         res.json({ success: true, repos: repoList });
     } catch (error) {
-        console.error('Repo saraksta kļūda:', error);
         res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
@@ -193,8 +189,7 @@ app.get('/api/github/repos', async (req, res) => {
 app.post('/api/check-repo-status', async (req, res) => {
     try {
         const { repoName, walletAddress } = req.body;
-        if (!repoName) return res.status(400).json({ success: false, error: 'Nav repo' });
-        if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet' });
+        if (!repoName || !walletAddress) return res.status(400).json({ success: false, error: 'Nav repo vai wallet' });
         
         const provider = getProvider();
         const repoHash = getRepositoryHash(repoName);
@@ -213,28 +208,23 @@ app.post('/api/check-repo-status', async (req, res) => {
         }
         
         if (hasNFT) {
-            if (SUBSCRIPTION_ADDRESS) {
-                const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, provider);
-                hasSubscription = await subscriptionContract.isSubscribed(tokenId);
-            }
+            const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, provider);
+            hasSubscription = await subscriptionContract.isSubscribed(tokenId);
             
             backupCount = Number(await nftContract.getBackupCount(tokenId));
             lastManifestURI = await nftContract.getManifestURI(tokenId);
             
-            if (REGISTRY_ADDRESS) {
-                const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
-                try {
-                    const repoId = await registryContract.getRepositoryByNFT(tokenId);
-                    isRegistered = repoId !== ethers.ZeroHash;
-                } catch (error) {
-                    console.warn('Registry pārbaudes kļūda:', errorMessage(error));
-                }
+            const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
+            try {
+                const repoId = await registryContract.getRepositoryByNFT(tokenId);
+                isRegistered = repoId !== ethers.ZeroHash;
+            } catch (e) {
+                console.warn('Registry pārbaudes kļūda:', errorMessage(e));
             }
         }
         
         res.json({ success: true, hasNFT, hasSubscription, isRegistered, tokenId: hasNFT ? tokenId.toString() : '0', backupCount, lastManifestURI });
     } catch (error) {
-        console.error('Repo statusa kļūda:', error);
         res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
@@ -246,7 +236,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repo nosaukuma' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet adreses' });
-        if (!ethers.isAddress(walletAddress)) return res.status(400).json({ success: false, error: 'Nederīga wallet adrese' });
         if (!githubToken) return res.status(401).json({ success: false, error: 'Nav GitHub autorizācijas' });
         
         const provider = getProvider();
@@ -277,22 +266,19 @@ app.post('/api/prepare-backup', async (req, res) => {
                 try {
                     const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/${txId}`);
                     if (manifestResponse.ok) previousManifest = await manifestResponse.json();
-                } catch (error) {
-                    console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(error));
+                } catch (e) {
+                    console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(e));
                 }
             }
         }
         
         const repoParts = repoName.split('/');
         if (repoParts.length !== 2) return res.status(400).json({ success: false, error: 'Repo jābūt owner/repository formātā' });
-        const owner = repoParts[0];
-        const repo = repoParts[1];
         
-        const currentFiles = await getRepoFiles(githubToken, owner, repo);
+        const currentFiles = await getRepoFiles(githubToken, repoParts[0], repoParts[1]);
         if (currentFiles.length === 0) return res.status(400).json({ success: false, error: 'Nav failu repo' });
         
-        const previousPaths = previousManifest && previousManifest.paths && typeof previousManifest.paths === 'object' ? previousManifest.paths : {};
-        
+        const previousPaths = previousManifest?.paths || {};
         const changedFiles = [];
         const unchangedFiles = {};
         
@@ -312,8 +298,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         }
         
         const turbo = getTurbo();
-        
-        // Aprēķina izmaksas gan winc, gan ETH
         let costWinc = 0n;
         let costEth = '0';
         
@@ -329,14 +313,12 @@ app.post('/api/prepare-backup', async (req, res) => {
             console.warn('Neizdevās iegūt ETH cenu:', errorMessage(e));
         }
         
-        // Pārbauda Treasury bilanci
+        const costWei = ethers.parseEther(costEth);
         let treasuryBalance = 0n;
         if (TREASURY_ADDRESS) {
             const treasuryContract = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, provider);
             treasuryBalance = await treasuryContract.balance();
         }
-        
-        const costWei = ethers.parseEther(costEth);
         const hasEnoughTreasury = treasuryBalance >= costWei;
         
         return res.json({
@@ -363,11 +345,10 @@ app.post('/api/prepare-backup', async (req, res) => {
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, costWinc, costEth, walletAddress } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, costEth, walletAddress } = req.body;
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
-        if (!ethers.isAddress(walletAddress)) return res.status(400).json({ success: false, error: 'Nederīga walletAddress' });
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs' });
         if (!unchangedFiles || typeof unchangedFiles !== 'object') return res.status(400).json({ success: false, error: 'Nav unchangedFiles' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId' });
@@ -375,7 +356,6 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const provider = getProvider();
         
-        // Revalidācija
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
         const repoHash = getRepositoryHash(repoName);
         const onChainTokenId = await nftContract.repositoryTokens(repoHash);
@@ -387,8 +367,7 @@ app.post('/api/execute-backup', async (req, res) => {
         if (nftOwner.toLowerCase() !== walletAddress.toLowerCase()) return res.status(403).json({ success: false, error: 'NFT nepieder wallet adresei' });
         
         const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, provider);
-        const isSubscribed = await subscriptionContract.isSubscribed(onChainTokenId);
-        if (!isSubscribed) return res.status(400).json({ success: false, error: 'Abonements vairs nav aktīvs' });
+        if (!(await subscriptionContract.isSubscribed(onChainTokenId))) return res.status(400).json({ success: false, error: 'Abonements vairs nav aktīvs' });
         
         const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
         const repoId = await registryContract.getRepositoryByNFT(onChainTokenId);
@@ -402,12 +381,12 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const payTx = await treasuryWrite.payTurbo(costWei, paymentId);
         await payTx.wait();
-        console.log('Treasury payTurbo veiksmīgs:', payTx.hash);
+        console.log('✅ Treasury payTurbo veiksmīgs:', payTx.hash);
         
-        // 2. Top up Turbo kredītus
+        // 2. Apstiprina Turbo transakciju
         const turbo = getTurbo();
-        await turbo.topUpWithTokens({ tokenAmount: costEth });
-        console.log('Turbo kredīti nopirkti');
+        await turbo.submitFundTransaction({ txId: payTx.hash });
+        console.log('✅ Turbo kredīti apstiprināti');
         
         // 3. Augšupielādē failus
         const uploadResults = [];
@@ -461,8 +440,7 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const manifestPaths = Object.keys(manifest.paths);
         if (manifestPaths.length > 0) {
-            if (manifest.paths['README.md']) manifest.index = { path: 'README.md' };
-            else manifest.index = { path: manifestPaths[0] };
+            manifest.index = { path: manifest.paths['README.md'] ? 'README.md' : manifestPaths[0] };
         }
         
         const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
@@ -531,10 +509,7 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
         }
     });
     
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`GitHub API kļūda: ${response.status} ${text}`);
-    }
+    if (!response.ok) throw new Error(`GitHub API kļūda: ${response.status}`);
     
     const contents = await response.json();
     if (!Array.isArray(contents)) return files;
@@ -549,7 +524,7 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
                 headers: { Authorization: `Bearer ${githubToken}`, Accept: 'application/octet-stream' }
             });
             
-            if (!fileResponse.ok) throw new Error(`GitHub faila lejupielādes kļūda: ${item.path}`);
+            if (!fileResponse.ok) continue;
             
             const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
             const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
@@ -564,25 +539,7 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
     return files;
 }
 
-app.get('/api/turbo/status', async (req, res) => {
-    try {
-        const turbo = getTurbo();
-        const balance = await turbo.getBalance();
-        const winc = balance && balance.winc !== undefined ? BigInt(String(balance.winc)) : null;
-        const operatorWallet = new ethers.Wallet(OPERATOR_PRIVATE_KEY);
-        
-        res.json({
-            success: true,
-            operatorAddress: operatorWallet.address,
-            token: TURBO_TOKEN,
-            winc: winc !== null ? winc.toString() : null
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, error: errorMessage(error) });
-    }
-});
-
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         configured: {
