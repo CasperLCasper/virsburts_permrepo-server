@@ -6,7 +6,7 @@ let currentRepo = null;
 let currentTokenId = '0';
 let currentUnchangedFiles = {};
 let currentFiles = [];
-let currentCostEth = '0';
+let currentCostWinc = '0';
 
 const NFT_ABI = [
     "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external",
@@ -194,7 +194,7 @@ async function prepareBackup() {
     if (result.success) {
         currentUnchangedFiles = result.unchangedFiles || {};
         currentFiles = result.files || [];
-        currentCostEth = result.costEth || '0';
+        currentCostWinc = result.costWinc || '0';
         
         if (result.files.length === 0) {
             setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
@@ -204,13 +204,13 @@ async function prepareBackup() {
         }
         
         document.getElementById('status').innerHTML = 
-            `💰 Apmaksas summa: <b>${result.costEth} ETH</b><br>` +
             `📦 Faili: ${result.files.length}<br>` +
-            `Nospied "Iemaksāt un Backupēt", lai turpinātu!`;
+            `💰 Izmaksas: ${result.costWinc} winc<br>` +
+            `Nospied "Izpildīt backupu", lai turpinātu!`;
         
         button.disabled = false;
-        button.textContent = 'Iemaksāt un Backupēt';
-        button.onclick = payAndExecute;
+        button.textContent = 'Izpildīt backupu';
+        button.onclick = executeBackup;
     } else {
         showError(result.error || 'Kļūda');
         button.disabled = false;
@@ -218,25 +218,12 @@ async function prepareBackup() {
     }
 }
 
-async function payAndExecute() {
+async function executeBackup() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
     
     try {
-        setStatus('1/3: Iemaksājam Treasury...');
-        
-        const provider = new ethers.BrowserProvider(window.ethereum);
-        const signer = await provider.getSigner();
-        
-        const tx = await signer.sendTransaction({
-            to: CONFIG.treasuryAddress,
-            value: ethers.parseEther(currentCostEth)
-        });
-        
-        setStatus('2/3: Gaida apstiprinājumu...');
-        await tx.wait();
-        
-        setStatus('3/3: Serveris augšupielādē...');
+        setStatus('Serveris augšupielādē failus...');
         
         const response = await fetch('/api/execute-backup', {
             method: 'POST',
@@ -246,7 +233,7 @@ async function payAndExecute() {
                 files: currentFiles,
                 unchangedFiles: currentUnchangedFiles,
                 tokenId: currentTokenId,
-                costEth: currentCostEth,
+                costWinc: currentCostWinc,
                 walletAddress: userAddress
             })
         });
@@ -254,25 +241,11 @@ async function payAndExecute() {
         const result = await response.json();
         
         if (result.success) {
-            setStatus('✅ Augšupielāde pabeigta!');
+            setStatus('✅ Augšupielāde pabeigta! Ierakstam blockchain...');
             
-            const manifestString = JSON.stringify({
-                manifest: 'arweave/paths',
-                version: '0.2.0',
-                index: { path: 'README.md' },
-                paths: {},
-                metadata: { repo: currentRepo, timestamp: new Date().toISOString() }
-            });
-            
-            const merkleRoot = calculateMerkleRoot({...currentUnchangedFiles});
-            const manifestHash = ethers.keccak256(new TextEncoder().encode(manifestString));
-            
-            setStatus('Ierakstam backupu blockchain...');
             await addBackupToBlockchain(
                 currentTokenId,
-                manifestHash,
-                merkleRoot,
-                `ar://${result.manifestTxId}`
+                result.manifestTxId
             );
             
             setStatus('✅ Backups veiksmīgi pabeigts!');
@@ -290,41 +263,13 @@ async function payAndExecute() {
         }
         
     } catch (e) {
-        if (e.code === 'ACTION_REJECTED') {
-            showError('Transakcija atcelta');
-        } else {
-            showError(e.message);
-        }
+        showError(e.message);
         button.disabled = false;
-        button.textContent = 'Iemaksāt un Backupēt';
+        button.textContent = 'Izpildīt backupu';
     }
 }
 
-function calculateMerkleRoot(paths) {
-    const entries = Object.entries(paths).sort(([a], [b]) => a.localeCompare(b));
-    
-    if (entries.length === 0) return '0x0000000000000000000000000000000000000000000000000000000000000000';
-    if (entries.length === 1) {
-        const [path, info] = entries[0];
-        return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string','string'], [path, info.txId]));
-    }
-    
-    let level = entries.map(([path, info]) => 
-        ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string','string'], [path, info.txId]))
-    );
-    
-    while (level.length > 1) {
-        const next = [];
-        for (let i = 0; i < level.length; i += 2) {
-            next.push(ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['bytes32','bytes32'], [level[i], level[i+1] || level[i]])));
-        }
-        level = next;
-    }
-    
-    return level[0];
-}
-
-async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifestURI) {
+async function addBackupToBlockchain(tokenId, manifestTxId) {
     const provider = new ethers.BrowserProvider(window.ethereum);
     const signerContract = await provider.getSigner();
     
@@ -334,6 +279,10 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
     const deadline = Math.floor(Date.now() / 1000) + 600;
     const currentNonce = await readContract.getNonce(tokenId);
     const backupNumber = await readContract.getBackupCount(tokenId);
+    
+    const manifestURI = `ar://${manifestTxId}`;
+    const manifestHash = ethers.keccak256(new TextEncoder().encode(manifestURI));
+    const merkleRoot = '0x0000000000000000000000000000000000000000000000000000000000000000';
     
     const domain = {
         name: 'PermRepo',
@@ -374,6 +323,8 @@ async function addBackupToBlockchain(tokenId, manifestHash, merkleRoot, manifest
     );
     
     await tx.wait();
+    console.log('addBackup transakcija veiksmīga:', tx.hash);
+    
     return tx.hash;
 }
 
