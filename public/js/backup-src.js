@@ -8,6 +8,7 @@ let currentUnchangedFiles = {};
 let currentFiles = [];
 let currentCostWinc = '0';
 let currentCostEth = '0';
+let currentPreviousHistory = [];
 let hasDeposited = false;
 
 const NFT_ABI = [
@@ -203,6 +204,7 @@ async function prepareBackup() {
         currentFiles = result.files || [];
         currentCostWinc = result.costWinc || '0';
         currentCostEth = result.costEth || '0';
+        currentPreviousHistory = result.previousHistory || [];
         
         if (result.files.length === 0) {
             setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
@@ -276,7 +278,8 @@ async function executeBackup() {
                 unchangedFiles: currentUnchangedFiles,
                 tokenId: currentTokenId,
                 costEth: currentCostEth,
-                walletAddress: userAddress
+                walletAddress: userAddress,
+                previousHistory: currentPreviousHistory
             })
         });
         
@@ -293,11 +296,20 @@ async function executeBackup() {
             setStatus('✅ Backups veiksmīgi pabeigts!');
             button.textContent = '✅ Pabeigts!';
             
+            let historyHtml = '';
+            if (result.history && result.history.length > 0) {
+                historyHtml = '<br><br>📜 Vēsture:<br>';
+                for (const item of result.history) {
+                    historyHtml += `#${item.backupNumber}: <a href="${item.url}" target="_blank">${item.manifestId}</a><br>`;
+                }
+            }
+            
             document.getElementById('status').innerHTML = 
                 `✅ Backups veiksmīgs!<br>` +
-                `Manifests: ar://${result.manifestTxId}<br>` +
+                `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${result.manifestTxId}" target="_blank">ar://${result.manifestTxId}</a><br>` +
                 `Faili: ${result.uploadedFiles.length}<br>` +
-                `Izmaksas: ${result.costEth} ETH`;
+                `Izmaksas: ${result.costEth} ETH` +
+                historyHtml;
             
         } else {
             showError(result.error || 'Kļūda');
