@@ -34,8 +34,7 @@ const NFT_ABI = [
     "function ownerOf(uint256 tokenId) external view returns (address)",
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)",
-    "event BackupAdded(uint256 indexed tokenId, uint256 indexed backupNumber, bytes32 indexed merkleRoot, bytes32 manifestHash, string manifestURI, uint256 nonce)"
+    "function getNonce(uint256 tokenId) external view returns (uint256)"
 ];
 
 const SUBSCRIPTION_ABI = [
@@ -257,6 +256,7 @@ app.post('/api/prepare-backup', async (req, res) => {
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         
         let previousPaths = {};
+        let previousHistory = [];
         
         if (backupCount > 0) {
             const manifestURI = await nftContract.getManifestURI(tokenId);
@@ -270,10 +270,11 @@ app.post('/api/prepare-backup', async (req, res) => {
                         const previousManifest = await manifestResponse.json();
                         if (previousManifest && previousManifest.paths) {
                             previousPaths = previousManifest.paths;
-                            console.log('Iepriekšējais manifests iegūts ar', Object.keys(previousPaths).length, 'failiem');
                         }
-                    } else {
-                        console.warn('Manifest gateway HTTP:', manifestResponse.status);
+                        if (previousManifest && previousManifest.history) {
+                            previousHistory = previousManifest.history;
+                        }
+                        console.log('Iepriekšējais manifests iegūts ar', Object.keys(previousPaths).length, 'failiem un', previousHistory.length, 'vēstures ierakstiem');
                     }
                 } catch (e) {
                     console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(e));
@@ -358,6 +359,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             tokenId: tokenId.toString(),
             files: changedFiles.map(file => ({ path: file.path, size: file.size, hash: file.hash, content: file.content })),
             unchangedFiles,
+            previousHistory,
             fileCount: changedFiles.length,
             totalBytes,
             costWinc: costWinc.toString(),
@@ -376,7 +378,7 @@ app.post('/api/prepare-backup', async (req, res) => {
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, costEth, walletAddress } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, costEth, walletAddress, previousHistory } = req.body;
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
@@ -450,29 +452,16 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
-        // 4. Iegūst vēsturi no blockchain events
-        const filter = nftContract.filters.BackupAdded(onChainTokenId);
-        const backupEvents = await nftContract.queryFilter(filter);
+        // 4. Veido manifestu ar vēsturi
+        const backupCount = Number(await nftContract.getBackupCount(onChainTokenId));
+        const newBackupNumber = backupCount + 1;
         
-        const history = backupEvents.map(event => {
-            const uri = event.args.manifestURI;
-            const id = uri.startsWith('ar://') ? uri.slice(5) : uri;
-            return {
-                backupNumber: Number(event.args.backupNumber),
-                manifestId: id,
-                url: `${ARWEAVE_GATEWAY}/raw/${id}`
-            };
-        });
-        
-        console.log('Vēsture iegūta:', history.length, 'iepriekšējie manifesti');
-        
-        // 5. Veido manifestu ar vēsturi
         const manifest = {
             manifest: 'arweave/paths',
             version: '0.2.0',
             paths: {},
-            history,
-            metadata: { repo: repoName, timestamp: new Date().toISOString(), generatedBy: 'PermRepo v1.0.0' }
+            history: previousHistory || [],
+            metadata: { repo: repoName, backupNumber: newBackupNumber, timestamp: new Date().toISOString(), generatedBy: 'PermRepo v1.0.0' }
         };
         
         // Pievieno jaunos failus ar hash un url
@@ -519,13 +508,22 @@ app.post('/api/execute-backup', async (req, res) => {
         
         if (!manifestResult || !manifestResult.id) throw new Error('Turbo neatgrieza manifest ID');
         
+        // 5. Pievieno pašreizējo manifestu vēsturei atbildei
+        const currentManifestEntry = {
+            backupNumber: newBackupNumber,
+            manifestId: manifestResult.id,
+            url: `${ARWEAVE_GATEWAY}/raw/${manifestResult.id}`
+        };
+        
+        const updatedHistory = [...(previousHistory || []), currentManifestEntry];
+        
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
             uploadedFiles: uploadResults,
             costEth,
             paymentTx: payTx.hash,
-            history
+            history: updatedHistory
         });
         
     } catch (error) {
