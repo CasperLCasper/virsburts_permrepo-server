@@ -255,8 +255,31 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         
-        // Nelasam iepriekšējo manifestu — testēšanai vienkārši backupējam visu
-        const previousPaths = {};
+        // Iegūst iepriekšējo manifestu
+        let previousPaths = {};
+        
+        if (backupCount > 0) {
+            const manifestURI = await nftContract.getManifestURI(tokenId);
+            console.log('Iepriekšējais manifesta URI:', manifestURI);
+            
+            if (manifestURI && manifestURI.startsWith('ar://')) {
+                const txId = manifestURI.slice(5);
+                try {
+                    const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${txId}`);
+                    if (manifestResponse.ok) {
+                        const previousManifest = await manifestResponse.json();
+                        if (previousManifest && previousManifest.paths) {
+                            previousPaths = previousManifest.paths;
+                            console.log('Iepriekšējais manifests iegūts ar', Object.keys(previousPaths).length, 'failiem');
+                        }
+                    } else {
+                        console.warn('Manifest gateway HTTP:', manifestResponse.status);
+                    }
+                } catch (e) {
+                    console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(e));
+                }
+            }
+        }
         
         const repoParts = repoName.split('/');
         if (repoParts.length !== 2) return res.status(400).json({ success: false, error: 'Repo jābūt owner/repository formātā' });
@@ -264,10 +287,47 @@ app.post('/api/prepare-backup', async (req, res) => {
         const currentFiles = await getRepoFiles(githubToken, repoParts[0], repoParts[1]);
         if (currentFiles.length === 0) return res.status(400).json({ success: false, error: 'Nav failu repo' });
         
-        const changedFiles = currentFiles;
+        // Inkrementālā salīdzināšana
+        const changedFiles = [];
         const unchangedFiles = {};
         
+        for (const file of currentFiles) {
+            const previousFile = previousPaths[file.path];
+            
+            if (previousFile && previousFile.id && previousFile.hash && previousFile.hash === file.hash) {
+                unchangedFiles[file.path] = {
+                    txId: previousFile.id,
+                    size: file.size,
+                    hash: file.hash
+                };
+            } else {
+                changedFiles.push(file);
+            }
+        }
+        
+        console.log('Mainīti/jauni faili:', changedFiles.length);
+        console.log('Nemainīti faili:', Object.keys(unchangedFiles).length);
+        
         const totalBytes = changedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        
+        if (totalBytes === 0) {
+            return res.json({
+                success: true,
+                repoName,
+                tokenId: tokenId.toString(),
+                files: [],
+                unchangedFiles,
+                fileCount: 0,
+                totalBytes: 0,
+                costWinc: '0',
+                costEth: '0',
+                treasuryBalance: '0',
+                hasEnoughTreasury: true,
+                hasPreviousBackup: backupCount > 0,
+                backupCount,
+                message: 'Nav izmaiņu'
+            });
+        }
         
         const turbo = getTurbo();
         let costWinc = 0n;
@@ -391,7 +451,7 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
-        // 4. Manifests
+        // 4. Manifests ar hash vērtībām
         const manifest = {
             manifest: 'arweave/paths',
             version: '0.2.0',
@@ -399,12 +459,16 @@ app.post('/api/execute-backup', async (req, res) => {
             metadata: { repo: repoName, timestamp: new Date().toISOString(), generatedBy: 'PermRepo v1.0.0' }
         };
         
+        // Pievieno jaunos failus ar hash
         for (const file of uploadResults) {
-            manifest.paths[file.path] = { id: file.txId };
+            manifest.paths[file.path] = { id: file.txId, hash: file.hash };
         }
         
+        // Pievieno nemainītos failus ar hash
         for (const [filePath, info] of Object.entries(unchangedFiles || {})) {
-            if (info && info.txId) manifest.paths[filePath] = { id: info.txId };
+            if (info && info.txId) {
+                manifest.paths[filePath] = { id: info.txId, hash: info.hash };
+            }
         }
         
         const manifestPaths = Object.keys(manifest.paths);
