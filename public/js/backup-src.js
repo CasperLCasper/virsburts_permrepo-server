@@ -8,6 +8,8 @@ let currentUnchangedFiles = {};
 let currentFiles = [];
 let currentCostEth = '0';
 let currentPreviousHistory = [];
+let currentPreviousManifestId = null;
+let currentPreviousBackupNumber = null;
 let hasDeposited = false;
 
 const NFT_ABI = [
@@ -196,6 +198,8 @@ async function prepareBackup() {
         currentFiles = result.files || [];
         currentCostEth = result.costEth || '0';
         currentPreviousHistory = result.previousHistory || [];
+        currentPreviousManifestId = result.previousManifestId || null;
+        currentPreviousBackupNumber = result.previousBackupNumber || null;
         
         if (result.files.length === 0) {
             setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
@@ -252,7 +256,9 @@ async function executeBackup() {
                 tokenId: currentTokenId,
                 costEth: currentCostEth,
                 walletAddress: userAddress,
-                previousHistory: currentPreviousHistory
+                previousHistory: currentPreviousHistory,
+                previousManifestId: currentPreviousManifestId,
+                previousBackupNumber: currentPreviousBackupNumber
             })
         });
         
