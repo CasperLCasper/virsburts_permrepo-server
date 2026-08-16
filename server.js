@@ -46,6 +46,11 @@ const REGISTRY_ABI = [
     "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)"
 ];
 
+const TREASURY_ABI = [
+    "function payTurbo(uint256 amount, bytes32 paymentId) external",
+    "function balance() external view returns (uint256)"
+];
+
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -72,13 +77,10 @@ function getTurbo() {
     return TurboFactory.authenticated({
         signer: new EthereumSigner(OPERATOR_PRIVATE_KEY),
         token: TURBO_TOKEN,
+        gatewayUrl: 'https://sepolia.base.org',
         uploadServiceConfig: { url: TURBO_UPLOAD_URL },
         paymentServiceConfig: { url: TURBO_PAYMENT_URL }
     });
-}
-
-function bufferToReadableStream(buffer) {
-    return Readable.from(buffer);
 }
 
 function errorMessage(error) {
@@ -246,10 +248,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet adreses' });
         if (!ethers.isAddress(walletAddress)) return res.status(400).json({ success: false, error: 'Nederīga wallet adrese' });
         if (!githubToken) return res.status(401).json({ success: false, error: 'Nav GitHub autorizācijas' });
-        if (!RPC_URL) return res.status(500).json({ success: false, error: 'RPC_URL nav konfigurēts' });
-        if (!NFT_ADDRESS) return res.status(500).json({ success: false, error: 'NFT_ADDRESS nav konfigurēts' });
-        if (!SUBSCRIPTION_ADDRESS) return res.status(500).json({ success: false, error: 'SUBSCRIPTION_ADDRESS nav konfigurēts' });
-        if (!REGISTRY_ADDRESS) return res.status(500).json({ success: false, error: 'REGISTRY_ADDRESS nav konfigurēts' });
         
         const provider = getProvider();
         const repoHash = getRepositoryHash(repoName);
@@ -310,40 +308,36 @@ app.post('/api/prepare-backup', async (req, res) => {
         const totalBytes = changedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
         
         if (totalBytes === 0) {
-            return res.json({ success: true, repoName, tokenId: tokenId.toString(), files: [], unchangedFiles, fileCount: 0, totalBytes: 0, costWinc: '0', hasPreviousBackup: backupCount > 0, backupCount, message: 'Nav izmaiņu' });
+            return res.json({ success: true, repoName, tokenId: tokenId.toString(), files: [], unchangedFiles, fileCount: 0, totalBytes: 0, costWinc: '0', costEth: '0', hasPreviousBackup: backupCount > 0, backupCount, message: 'Nav izmaiņu' });
         }
         
         const turbo = getTurbo();
+        
+        // Aprēķina izmaksas gan winc, gan ETH
+        let costWinc = 0n;
+        let costEth = '0';
+        
         const costs = await turbo.getUploadCosts({ bytes: [totalBytes] });
+        if (Array.isArray(costs) && costs.length > 0 && costs[0].winc !== undefined) {
+            costWinc = BigInt(String(costs[0].winc));
+        }
         
-        if (!Array.isArray(costs) || costs.length === 0) throw new Error('Turbo getUploadCosts atgrieza tukšu masīvu');
-        const costInfo = costs[0];
-        if (!costInfo || costInfo.winc === undefined || costInfo.winc === null) throw new Error('Turbo getUploadCosts rezultātā nav winc');
-        
-        const costWinc = BigInt(String(costInfo.winc));
-        
-        let turboBalanceWinc = null;
         try {
-            const balance = await turbo.getBalance();
-            if (balance && balance.winc !== undefined) turboBalanceWinc = BigInt(String(balance.winc));
-        } catch (error) {
-            console.warn('Turbo balance pārbaude neizdevās:', errorMessage(error));
+            const { tokenPrice } = await turbo.getTokenPriceForBytes({ byteCount: totalBytes });
+            costEth = tokenPrice.toString();
+        } catch (e) {
+            console.warn('Neizdevās iegūt ETH cenu:', errorMessage(e));
         }
         
-        if (turboBalanceWinc !== null) {
-            const requiredWinc = costWinc + TURBO_MIN_RESERVE_WINC;
-            if (turboBalanceWinc < requiredWinc) {
-                return res.status(503).json({
-                    success: false,
-                    error: 'Turbo kredītu rezerve nav pietiekama',
-                    code: 'INSUFFICIENT_TURBO_CREDITS',
-                    costWinc: costWinc.toString(),
-                    turboBalanceWinc: turboBalanceWinc.toString(),
-                    requiredWinc: requiredWinc.toString(),
-                    minReserveWinc: TURBO_MIN_RESERVE_WINC.toString()
-                });
-            }
+        // Pārbauda Treasury bilanci
+        let treasuryBalance = 0n;
+        if (TREASURY_ADDRESS) {
+            const treasuryContract = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, provider);
+            treasuryBalance = await treasuryContract.balance();
         }
+        
+        const costWei = ethers.parseEther(costEth);
+        const hasEnoughTreasury = treasuryBalance >= costWei;
         
         return res.json({
             success: true,
@@ -354,24 +348,22 @@ app.post('/api/prepare-backup', async (req, res) => {
             fileCount: changedFiles.length,
             totalBytes,
             costWinc: costWinc.toString(),
-            turboCost: { token: TURBO_TOKEN, winc: costWinc.toString(), bytes: totalBytes },
-            turboBalanceWinc: turboBalanceWinc !== null ? turboBalanceWinc.toString() : null,
+            costEth,
+            treasuryBalance: treasuryBalance.toString(),
+            hasEnoughTreasury,
             hasPreviousBackup: backupCount > 0,
             backupCount
         });
         
     } catch (error) {
-        console.error('========================================');
-        console.error('BACKUP PREPARE ERROR');
-        console.error(error);
-        console.error('========================================');
+        console.error('BACKUP PREPARE ERROR', error);
         return res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, costWinc, walletAddress } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, costWinc, costEth, walletAddress } = req.body;
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
@@ -379,15 +371,11 @@ app.post('/api/execute-backup', async (req, res) => {
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs' });
         if (!unchangedFiles || typeof unchangedFiles !== 'object') return res.status(400).json({ success: false, error: 'Nav unchangedFiles' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId' });
-        if (costWinc === undefined || costWinc === null) return res.status(400).json({ success: false, error: 'Nav costWinc' });
+        if (!costEth) return res.status(400).json({ success: false, error: 'Nav costEth' });
         
-        const requiredWinc = BigInt(String(costWinc));
         const provider = getProvider();
         
-        if (!NFT_ADDRESS) return res.status(500).json({ success: false, error: 'NFT_ADDRESS nav konfigurēts' });
-        if (!SUBSCRIPTION_ADDRESS) return res.status(500).json({ success: false, error: 'SUBSCRIPTION_ADDRESS nav konfigurēts' });
-        if (!REGISTRY_ADDRESS) return res.status(500).json({ success: false, error: 'REGISTRY_ADDRESS nav konfigurēts' });
-        
+        // Revalidācija
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
         const repoHash = getRepositoryHash(repoName);
         const onChainTokenId = await nftContract.repositoryTokens(repoHash);
@@ -406,26 +394,26 @@ app.post('/api/execute-backup', async (req, res) => {
         const repoId = await registryContract.getRepositoryByNFT(onChainTokenId);
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry' });
         
+        // 1. payTurbo no Treasury
+        const operatorWallet = getOperatorWallet(provider);
+        const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+        const costWei = ethers.parseEther(costEth);
+        const paymentId = ethers.id(repoName + Date.now().toString());
+        
+        const payTx = await treasuryWrite.payTurbo(costWei, paymentId);
+        await payTx.wait();
+        console.log('Treasury payTurbo veiksmīgs:', payTx.hash);
+        
+        // 2. Top up Turbo kredītus
         const turbo = getTurbo();
-        const turboBalance = await turbo.getBalance();
-        if (!turboBalance || turboBalance.winc === undefined) throw new Error('Turbo getBalance neatgrieza winc');
+        await turbo.topUpWithTokens({ tokenAmount: costEth });
+        console.log('Turbo kredīti nopirkti');
         
-        const availableWinc = BigInt(String(turboBalance.winc));
-        if (availableWinc < requiredWinc) {
-            return res.status(503).json({
-                success: false,
-                error: 'Turbo kredītu nepietiek backup izpildei',
-                code: 'INSUFFICIENT_TURBO_CREDITS',
-                requiredWinc: requiredWinc.toString(),
-                availableWinc: availableWinc.toString()
-            });
-        }
-        
+        // 3. Augšupielādē failus
         const uploadResults = [];
         
         for (const file of files) {
-            if (!file.path) throw new Error('Backup failam nav path');
-            if (!file.content) throw new Error(`Backup failam nav content: ${file.path}`);
+            if (!file.path || !file.content) throw new Error(`Nederīgs fails: ${file.path}`);
             
             const fileBuffer = Buffer.from(file.content, 'base64');
             console.log('Augšupielādē:', file.path);
@@ -445,7 +433,7 @@ app.post('/api/execute-backup', async (req, res) => {
                 }
             });
             
-            if (!result || !result.id) throw new Error(`Turbo neatgrieza transaction ID failam: ${file.path}`);
+            if (!result || !result.id) throw new Error(`Turbo neatgrieza ID failam: ${file.path}`);
             
             uploadResults.push({
                 path: file.path,
@@ -455,6 +443,7 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
+        // 4. Manifests
         const manifest = {
             manifest: 'arweave/paths',
             version: '0.2.0',
@@ -493,30 +482,18 @@ app.post('/api/execute-backup', async (req, res) => {
             }
         });
         
-        if (!manifestResult || !manifestResult.id) throw new Error('Turbo neatgrieza manifest transaction ID');
-        
-        let turboBalanceAfter = null;
-        try {
-            const after = await turbo.getBalance();
-            if (after && after.winc !== undefined) turboBalanceAfter = BigInt(String(after.winc));
-        } catch (error) {
-            console.warn('Turbo balance pēc upload neizdevās:', errorMessage(error));
-        }
+        if (!manifestResult || !manifestResult.id) throw new Error('Turbo neatgrieza manifest ID');
         
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
             uploadedFiles: uploadResults,
-            costWinc: requiredWinc.toString(),
-            turboBalanceBefore: availableWinc.toString(),
-            turboBalanceAfter: turboBalanceAfter !== null ? turboBalanceAfter.toString() : null
+            costEth,
+            paymentTx: payTx.hash
         });
         
     } catch (error) {
-        console.error('========================================');
-        console.error('BACKUP EXECUTE ERROR');
-        console.error(error);
-        console.error('========================================');
+        console.error('BACKUP EXECUTE ERROR', error);
         return res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
@@ -565,20 +542,14 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
     for (const item of contents) {
         if (item.type === 'file') {
             const size = Number(item.size || 0);
-            if (size > 104857600) {
-                console.warn('Fails pārsniedz 100 MB:', item.path);
-                continue;
-            }
-            if (!item.download_url) {
-                console.warn('Failam nav download_url:', item.path);
-                continue;
-            }
+            if (size > 104857600) continue;
+            if (!item.download_url) continue;
             
             const fileResponse = await fetch(item.download_url, {
                 headers: { Authorization: `Bearer ${githubToken}`, Accept: 'application/octet-stream' }
             });
             
-            if (!fileResponse.ok) throw new Error(`GitHub faila lejupielādes kļūda: ${item.path} (${fileResponse.status})`);
+            if (!fileResponse.ok) throw new Error(`GitHub faila lejupielādes kļūda: ${item.path}`);
             
             const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
             const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
@@ -595,7 +566,6 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
 
 app.get('/api/turbo/status', async (req, res) => {
     try {
-        if (!OPERATOR_PRIVATE_KEY) return res.status(500).json({ success: false, error: 'OPERATOR_PRIVATE_KEY nav konfigurēts' });
         const turbo = getTurbo();
         const balance = await turbo.getBalance();
         const winc = balance && balance.winc !== undefined ? BigInt(String(balance.winc)) : null;
@@ -605,55 +575,24 @@ app.get('/api/turbo/status', async (req, res) => {
             success: true,
             operatorAddress: operatorWallet.address,
             token: TURBO_TOKEN,
-            winc: winc !== null ? winc.toString() : null,
-            minReserveWinc: TURBO_MIN_RESERVE_WINC.toString(),
-            uploadService: TURBO_UPLOAD_URL,
-            paymentService: TURBO_PAYMENT_URL
+            winc: winc !== null ? winc.toString() : null
         });
     } catch (error) {
-        console.error('Turbo status kļūda:', error);
         res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
 
 app.get('/api/health', async (req, res) => {
-    let operatorAddress = null;
-    let turboBalanceWinc = null;
-    
-    if (OPERATOR_PRIVATE_KEY) {
-        try {
-            const wallet = new ethers.Wallet(OPERATOR_PRIVATE_KEY);
-            operatorAddress = wallet.address;
-        } catch (error) {
-            operatorAddress = null;
-        }
-    }
-    
-    if (OPERATOR_PRIVATE_KEY) {
-        try {
-            const turbo = getTurbo();
-            const balance = await turbo.getBalance();
-            if (balance && balance.winc !== undefined) turboBalanceWinc = BigInt(String(balance.winc)).toString();
-        } catch (error) {
-            console.warn('Health Turbo balance kļūda:', errorMessage(error));
-        }
-    }
-    
     res.json({
         status: 'ok',
         configured: {
             rpc: !!RPC_URL,
             operatorKey: !!OPERATOR_PRIVATE_KEY,
-            operatorAddress,
             treasury: !!TREASURY_ADDRESS,
             nft: !!NFT_ADDRESS,
             subscription: !!SUBSCRIPTION_ADDRESS,
             registry: !!REGISTRY_ADDRESS,
-            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET && GITHUB_REDIRECT_URI),
-            turboToken: TURBO_TOKEN,
-            turboUpload: TURBO_UPLOAD_URL,
-            turboPayment: TURBO_PAYMENT_URL,
-            turboBalanceWinc
+            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET && GITHUB_REDIRECT_URI)
         }
     });
 });
@@ -673,8 +612,5 @@ app.listen(PORT, () => {
     console.log('SUBSCRIPTION_ADDRESS:', SUBSCRIPTION_ADDRESS || 'NAV');
     console.log('REGISTRY_ADDRESS:', REGISTRY_ADDRESS || 'NAV');
     console.log('TURBO_TOKEN:', TURBO_TOKEN);
-    console.log('TURBO_UPLOAD_URL:', TURBO_UPLOAD_URL);
-    console.log('TURBO_PAYMENT_URL:', TURBO_PAYMENT_URL);
-    console.log('TURBO_MIN_RESERVE_WINC:', TURBO_MIN_RESERVE_WINC.toString());
     console.log('========================================');
 });
