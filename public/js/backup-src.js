@@ -8,6 +8,7 @@ let currentUnchangedFiles = {};
 let currentFiles = [];
 let currentCostWinc = '0';
 let currentCostEth = '0';
+let hasDeposited = false;
 
 const NFT_ABI = [
     "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external",
@@ -120,6 +121,7 @@ async function connectWallet() {
 
 async function checkRepoStatus(repoName) {
     currentRepo = repoName;
+    hasDeposited = false;
     
     const statusSection = document.getElementById('statusSection');
     statusSection.style.display = 'block';
@@ -228,37 +230,40 @@ async function executeBackup() {
     button.disabled = true;
     
     try {
-        // 1. Pārbaudam Treasury bilanci
-        const provider = new ethers.BrowserProvider(window.ethereum);
-        const signer = await provider.getSigner();
-        
-        const treasuryContract = new ethers.Contract(
-            CONFIG.treasuryAddress,
-            TREASURY_ABI,
-            provider
-        );
-        
-        const balance = await treasuryContract.balance();
-        const costWei = ethers.parseEther(currentCostEth);
-        
-        // 2. Ja nav pietiekami, iemaksājam
-        if (balance < costWei) {
-            setStatus('Iemaksājam Treasury...');
-            button.textContent = '⏳ Iemaksā...';
+        // 1. Tikai vienu reizi pārbaudam un iemaksājam
+        if (!hasDeposited) {
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
             
-            const tx = await signer.sendTransaction({
-                to: CONFIG.treasuryAddress,
-                value: costWei
-            });
+            const treasuryContract = new ethers.Contract(
+                CONFIG.treasuryAddress,
+                TREASURY_ABI,
+                provider
+            );
             
-            setStatus('Gaida iemaksas apstiprinājumu...');
-            button.textContent = '⏳ Gaida...';
-            await tx.wait();
+            const balance = await treasuryContract.balance();
+            const costWei = ethers.parseEther(currentCostEth);
             
-            setStatus('✅ Iemaksa veiksmīga!');
+            if (balance < costWei) {
+                setStatus('Iemaksājam Treasury...');
+                button.textContent = '⏳ Iemaksā...';
+                
+                const tx = await signer.sendTransaction({
+                    to: CONFIG.treasuryAddress,
+                    value: costWei
+                });
+                
+                setStatus('Gaida iemaksas apstiprinājumu...');
+                button.textContent = '⏳ Gaida...';
+                await tx.wait();
+                
+                setStatus('✅ Iemaksa veiksmīga!');
+            }
+            
+            hasDeposited = true;
         }
         
-        // 3. Izpildam backupu
+        // 2. Izpildam backupu
         setStatus('Serveris apmaksā un augšupielādē...');
         button.textContent = '⏳ Backups...';
         
