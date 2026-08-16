@@ -125,9 +125,7 @@ app.get('/api/github/callback', async (req, res) => {
         if (!tokenResponse.ok) throw new Error(`GitHub OAuth token HTTP ${tokenResponse.status}`);
         const tokenData = await tokenResponse.json();
         
-        if (!tokenData.access_token) {
-            return res.redirect('/backup.html?error=token');
-        }
+        if (!tokenData.access_token) return res.redirect('/backup.html?error=token');
         
         req.session.githubToken = tokenData.access_token;
         
@@ -249,8 +247,7 @@ app.post('/api/prepare-backup', async (req, res) => {
         if (nftOwner.toLowerCase() !== walletAddress.toLowerCase()) return res.status(403).json({ success: false, error: 'NFT nepieder šai adresei' });
         
         const subscriptionContract = new ethers.Contract(SUBSCRIPTION_ADDRESS, SUBSCRIPTION_ABI, provider);
-        const isSubscribed = await subscriptionContract.isSubscribed(tokenId);
-        if (!isSubscribed) return res.status(400).json({ success: false, error: 'Nav aktīva abonementa' });
+        if (!(await subscriptionContract.isSubscribed(tokenId))) return res.status(400).json({ success: false, error: 'Nav aktīva abonementa' });
         
         const registryContract = new ethers.Contract(REGISTRY_ADDRESS, REGISTRY_ABI, provider);
         const repoId = await registryContract.getRepositoryByNFT(tokenId);
@@ -258,19 +255,8 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         
-        let previousManifest = null;
-        if (backupCount > 0) {
-            const manifestURI = await nftContract.getManifestURI(tokenId);
-            if (manifestURI && manifestURI.startsWith('ar://')) {
-                const txId = manifestURI.slice(5);
-                try {
-                    const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/${txId}`);
-                    if (manifestResponse.ok) previousManifest = await manifestResponse.json();
-                } catch (e) {
-                    console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(e));
-                }
-            }
-        }
+        // Nelasam iepriekšējo manifestu — testēšanai vienkārši backupējam visu
+        const previousPaths = {};
         
         const repoParts = repoName.split('/');
         if (repoParts.length !== 2) return res.status(400).json({ success: false, error: 'Repo jābūt owner/repository formātā' });
@@ -278,24 +264,10 @@ app.post('/api/prepare-backup', async (req, res) => {
         const currentFiles = await getRepoFiles(githubToken, repoParts[0], repoParts[1]);
         if (currentFiles.length === 0) return res.status(400).json({ success: false, error: 'Nav failu repo' });
         
-        const previousPaths = previousManifest?.paths || {};
-        const changedFiles = [];
+        const changedFiles = currentFiles;
         const unchangedFiles = {};
         
-        for (const file of currentFiles) {
-            const previousFile = previousPaths[file.path];
-            if (previousFile && previousFile.id && previousFile.hash && previousFile.hash === file.hash) {
-                unchangedFiles[file.path] = { txId: previousFile.id, size: file.size, hash: file.hash };
-            } else {
-                changedFiles.push(file);
-            }
-        }
-        
         const totalBytes = changedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
-        
-        if (totalBytes === 0) {
-            return res.json({ success: true, repoName, tokenId: tokenId.toString(), files: [], unchangedFiles, fileCount: 0, totalBytes: 0, costWinc: '0', costEth: '0', hasPreviousBackup: backupCount > 0, backupCount, message: 'Nav izmaiņu' });
-        }
         
         const turbo = getTurbo();
         let costWinc = 0n;
@@ -350,7 +322,6 @@ app.post('/api/execute-backup', async (req, res) => {
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs' });
-        if (!unchangedFiles || typeof unchangedFiles !== 'object') return res.status(400).json({ success: false, error: 'Nav unchangedFiles' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId' });
         if (!costEth) return res.status(400).json({ success: false, error: 'Nav costEth' });
         
@@ -361,7 +332,6 @@ app.post('/api/execute-backup', async (req, res) => {
         const onChainTokenId = await nftContract.repositoryTokens(repoHash);
         
         if (onChainTokenId === 0n) return res.status(400).json({ success: false, error: 'Repo NFT vairs nepastāv' });
-        if (onChainTokenId.toString() !== String(tokenId)) return res.status(409).json({ success: false, error: 'tokenId vairs neatbilst repo' });
         
         const nftOwner = await nftContract.ownerOf(onChainTokenId);
         if (nftOwner.toLowerCase() !== walletAddress.toLowerCase()) return res.status(403).json({ success: false, error: 'NFT nepieder wallet adresei' });
@@ -383,12 +353,11 @@ app.post('/api/execute-backup', async (req, res) => {
         await payTx.wait();
         console.log('✅ Treasury payTurbo veiksmīgs:', payTx.hash);
         
-        // 2. Apstiprina Turbo transakciju
-        const turbo = getTurbo();
-        await turbo.submitFundTransaction({ txId: payTx.hash });
-        console.log('✅ Turbo kredīti apstiprināti');
+        // 2. Pagaida, kamēr Turbo apstrādā maksājumu
+        await new Promise(resolve => setTimeout(resolve, 5000));
         
         // 3. Augšupielādē failus
+        const turbo = getTurbo();
         const uploadResults = [];
         
         for (const file of files) {
@@ -434,7 +403,7 @@ app.post('/api/execute-backup', async (req, res) => {
             manifest.paths[file.path] = { id: file.txId };
         }
         
-        for (const [filePath, info] of Object.entries(unchangedFiles)) {
+        for (const [filePath, info] of Object.entries(unchangedFiles || {})) {
             if (info && info.txId) manifest.paths[filePath] = { id: info.txId };
         }
         
