@@ -8,6 +8,7 @@ let currentUnchangedFiles = {};
 let currentFiles = [];
 let currentCostWinc = '0';
 let currentCostEth = '0';
+let currentHasEnoughTreasury = false;
 
 const NFT_ABI = [
     "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external",
@@ -197,6 +198,7 @@ async function prepareBackup() {
         currentFiles = result.files || [];
         currentCostWinc = result.costWinc || '0';
         currentCostEth = result.costEth || '0';
+        currentHasEnoughTreasury = result.hasEnoughTreasury || false;
         
         if (result.files.length === 0) {
             setStatus('✅ Nav izmaiņu — visi faili jau ir backupēti!');
@@ -212,8 +214,8 @@ async function prepareBackup() {
             `💰 Izmaksas: ${result.costEth} ETH<br>` +
             `🏦 Treasury bilance: ${treasuryBalanceEth} ETH<br>` +
             (result.hasEnoughTreasury
-                ? '✅ Treasury ir pietiekami līdzekļu!<br>Nospied "Izpildīt backupu"!'
-                : '❌ Treasury nav pietiekami līdzekļu!<br>Vispirms iemaksā ETH Treasury!');
+                ? '✅ Treasury ir pietiekami līdzekļu!'
+                : '❌ Treasury nav pietiekami līdzekļu — iemaksa notiks automātiski!');
         
         button.disabled = false;
         button.textContent = 'Izpildīt backupu';
@@ -230,7 +232,29 @@ async function executeBackup() {
     button.disabled = true;
     
     try {
-        setStatus('Serveris apmaksā un augšupielādē failus...');
+        // Ja Treasury nav pietiekami, vispirms iemaksā
+        if (!currentHasEnoughTreasury) {
+            setStatus('Iemaksājam Treasury...');
+            button.textContent = '⏳ Iemaksā...';
+            
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
+            
+            const tx = await signer.sendTransaction({
+                to: CONFIG.treasuryAddress,
+                value: ethers.parseEther(currentCostEth)
+            });
+            
+            setStatus('Gaida iemaksas apstiprinājumu...');
+            button.textContent = '⏳ Gaida...';
+            await tx.wait();
+            
+            setStatus('✅ Iemaksa veiksmīga!');
+        }
+        
+        // Izpilda backupu
+        setStatus('Serveris apmaksā un augšupielādē...');
+        button.textContent = '⏳ Backups...';
         
         const response = await fetch('/api/execute-backup', {
             method: 'POST',
@@ -240,7 +264,6 @@ async function executeBackup() {
                 files: currentFiles,
                 unchangedFiles: currentUnchangedFiles,
                 tokenId: currentTokenId,
-                costWinc: currentCostWinc,
                 costEth: currentCostEth,
                 walletAddress: userAddress
             })
@@ -272,7 +295,11 @@ async function executeBackup() {
         }
         
     } catch (e) {
-        showError(e.message);
+        if (e.code === 'ACTION_REJECTED') {
+            showError('Transakcija atcelta');
+        } else {
+            showError(e.message);
+        }
         button.disabled = false;
         button.textContent = 'Izpildīt backupu';
     }
