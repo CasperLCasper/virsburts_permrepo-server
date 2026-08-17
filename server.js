@@ -91,7 +91,7 @@ function getRepositoryHash(repoName) {
 }
 
 // ============================================================
-// PILNĪGS IZMAKSU APRĒĶINS NO TURBO SDK
+// IZMAKSU APRĒĶINS TIKAI NO TURBO SDK
 // ============================================================
 
 async function getWincForBytes(turbo, byteSizes) {
@@ -113,39 +113,19 @@ async function getWincForBytes(turbo, byteSizes) {
     return { totalWinc, perFileWinc };
 }
 
-async function isFreeUpload(turbo, totalBytes) {
-    // 1. Pārbauda getFreeStatus
-    try {
-        const { bytesRemaining } = await turbo.getFreeStatus();
-        
-        if (bytesRemaining !== null && bytesRemaining >= totalBytes) {
-            return true;
-        }
-    } catch (e) {
-        console.warn('getFreeStatus kļūda:', errorMessage(e));
-    }
-    
-    // 2. Pārbauda getUploadCosts
-    try {
-        const { totalWinc } = await getWincForBytes(turbo, [totalBytes]);
-        if (totalWinc === 0n) {
-            return true;
-        }
-    } catch (e) {
-        console.warn('getUploadCosts kļūda:', errorMessage(e));
-    }
-    
-    return false;
-}
-
 async function getEthForBytes(turbo, totalBytes) {
     if (totalBytes <= 0) {
         return '0';
     }
     
-    // Vispirms pārbauda, vai ir bezmaksas
-    if (await isFreeUpload(turbo, totalBytes)) {
-        return '0';
+    // Pārbauda, vai bezmaksas caur getUploadCosts
+    try {
+        const { totalWinc } = await getWincForBytes(turbo, [totalBytes]);
+        if (totalWinc === 0n) {
+            return '0';
+        }
+    } catch (e) {
+        console.warn('getUploadCosts kļūda:', errorMessage(e));
     }
     
     // Tikai tad aprēķina ETH cenu
@@ -448,10 +428,7 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const turbo = getTurbo();
         
-        // ============================================
-        // 1. FAILU APMAKSA (ja nepieciešams)
-        // ============================================
-        
+        // 1. FAILU APMAKSA
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         if (fileCostWei > 0n) {
@@ -461,16 +438,12 @@ app.post('/api/execute-backup', async (req, res) => {
             const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId);
             await filePayTx.wait();
             console.log('✅ Failu apmaksa:', filePayTx.hash);
-            
             await new Promise(resolve => setTimeout(resolve, 5000));
         } else {
             console.log('✅ Faili ir bezmaksas!');
         }
         
-        // ============================================
         // 2. FAILU AUGŠUPIELĀDE
-        // ============================================
-        
         const uploadResults = [];
         
         for (const file of files) {
@@ -495,10 +468,7 @@ app.post('/api/execute-backup', async (req, res) => {
             console.log('✅ Augšupielādēts:', file.path);
         }
         
-        // ============================================
         // 3. MANIFESTA SAGATAVOŠANA
-        // ============================================
-        
         const history = [...(previousHistory || [])];
         
         if (previousManifestId) {
@@ -555,10 +525,6 @@ app.post('/api/execute-backup', async (req, res) => {
         const { totalWinc: manifestWinc } = await getWincForBytes(turbo, [manifestSize]);
         const manifestCostEth = await getEthForBytes(turbo, manifestSize);
         
-        // ============================================
-        // 4. ATGRIEŽ INFORMĀCIJU PAR MANIFESTU
-        // ============================================
-        
         return res.json({
             success: true,
             step: 'files_uploaded',
@@ -589,10 +555,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         const provider = getProvider();
         const turbo = getTurbo();
         
-        // ============================================
-        // 1. MANIFESTA APMAKSA (ja nepieciešams)
-        // ============================================
-        
+        // 1. MANIFESTA APMAKSA
         const manifestCostWei = ethers.parseEther(manifestCostEth);
         
         if (manifestCostWei > 0n) {
@@ -602,16 +565,12 @@ app.post('/api/finalize-backup', async (req, res) => {
             const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId);
             await manifestPayTx.wait();
             console.log('✅ Manifesta apmaksa:', manifestPayTx.hash);
-            
             await new Promise(resolve => setTimeout(resolve, 5000));
         } else {
             console.log('✅ Manifests ir bezmaksas!');
         }
         
-        // ============================================
         // 2. MANIFESTA AUGŠUPIELĀDE
-        // ============================================
-        
         const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
         
         const manifestResult = await turbo.uploadFile({
