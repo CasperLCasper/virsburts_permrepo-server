@@ -90,6 +90,33 @@ function getRepositoryHash(repoName) {
     return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repoName]));
 }
 
+async function getWincForBytes(turbo, byteSizes) {
+    if (!Array.isArray(byteSizes) || byteSizes.length === 0) {
+        return 0n;
+    }
+    
+    const costs = await turbo.getUploadCosts({ bytes: byteSizes });
+    
+    let totalWinc = 0n;
+    
+    for (const cost of costs) {
+        if (cost && cost.winc !== undefined) {
+            totalWinc += BigInt(String(cost.winc));
+        }
+    }
+    
+    return totalWinc;
+}
+
+async function getEthForBytes(turbo, totalBytes) {
+    if (totalBytes <= 0) {
+        return '0';
+    }
+    
+    const { tokenPrice } = await turbo.getTokenPriceForBytes({ byteCount: totalBytes });
+    return String(tokenPrice);
+}
+
 app.get('/api/config', (req, res) => {
     res.json({
         chainId: CHAIN_ID,
@@ -262,7 +289,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         if (backupCount > 0) {
             const manifestURI = await nftContract.getManifestURI(tokenId);
-            console.log('Iepriekšējais manifesta URI:', manifestURI);
             
             if (manifestURI && manifestURI.startsWith('ar://')) {
                 previousManifestId = manifestURI.slice(5);
@@ -271,16 +297,9 @@ app.post('/api/prepare-backup', async (req, res) => {
                     const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${previousManifestId}`);
                     if (manifestResponse.ok) {
                         const previousManifest = await manifestResponse.json();
-                        if (previousManifest.paths) {
-                            previousPaths = previousManifest.paths;
-                        }
-                        if (previousManifest.history) {
-                            previousHistory = previousManifest.history;
-                        }
-                        if (previousManifest.metadata && previousManifest.metadata.backupNumber) {
-                            previousBackupNumber = previousManifest.metadata.backupNumber;
-                        }
-                        console.log('Iepriekšējais manifests iegūts:', Object.keys(previousPaths).length, 'faili,', previousHistory.length, 'vēstures ieraksti');
+                        if (previousManifest.paths) previousPaths = previousManifest.paths;
+                        if (previousManifest.history) previousHistory = previousManifest.history;
+                        if (previousManifest.metadata && previousManifest.metadata.backupNumber) previousBackupNumber = previousManifest.metadata.backupNumber;
                     }
                 } catch (e) {
                     console.warn('Neizdevās iegūt iepriekšējo manifestu:', errorMessage(e));
@@ -304,9 +323,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             }
         }
         
-        const totalBytes = changedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
-        
-        if (totalBytes === 0) {
+        if (changedFiles.length === 0) {
             return res.json({
                 success: true,
                 repoName,
@@ -315,8 +332,8 @@ app.post('/api/prepare-backup', async (req, res) => {
                 unchangedFiles,
                 fileCount: 0,
                 totalBytes: 0,
-                costWinc: '0',
-                costEth: '0',
+                fileWinc: '0',
+                fileCostEth: '0',
                 treasuryBalance: '0',
                 hasEnoughTreasury: true,
                 hasPreviousBackup: backupCount > 0,
@@ -326,28 +343,20 @@ app.post('/api/prepare-backup', async (req, res) => {
         }
         
         const turbo = getTurbo();
-        let costWinc = 0n;
-        let costEth = '0';
         
-        const costs = await turbo.getUploadCosts({ bytes: [totalBytes] });
-        if (Array.isArray(costs) && costs.length > 0 && costs[0].winc !== undefined) {
-            costWinc = BigInt(String(costs[0].winc));
-        }
+        const fileSizes = changedFiles.map(file => file.size);
+        const fileWinc = await getWincForBytes(turbo, fileSizes);
+        const totalFileBytes = changedFiles.reduce((sum, file) => sum + file.size, 0);
+        const fileCostEth = await getEthForBytes(turbo, totalFileBytes);
         
-        try {
-            const { tokenPrice } = await turbo.getTokenPriceForBytes({ byteCount: totalBytes });
-            costEth = tokenPrice.toString();
-        } catch (e) {
-            console.warn('Neizdevās iegūt ETH cenu:', errorMessage(e));
-        }
-        
-        const costWei = ethers.parseEther(costEth);
         let treasuryBalance = 0n;
         if (TREASURY_ADDRESS) {
             const treasuryContract = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, provider);
             treasuryBalance = await treasuryContract.balance();
         }
-        const hasEnoughTreasury = treasuryBalance >= costWei;
+        
+        const fileCostWei = ethers.parseEther(fileCostEth);
+        const hasEnoughTreasury = treasuryBalance >= fileCostWei;
         
         return res.json({
             success: true,
@@ -359,9 +368,9 @@ app.post('/api/prepare-backup', async (req, res) => {
             previousManifestId,
             previousBackupNumber,
             fileCount: changedFiles.length,
-            totalBytes,
-            costWinc: costWinc.toString(),
-            costEth,
+            totalBytes: totalFileBytes,
+            fileWinc: fileWinc.toString(),
+            fileCostEth,
             treasuryBalance: treasuryBalance.toString(),
             hasEnoughTreasury,
             hasPreviousBackup: backupCount > 0,
@@ -376,13 +385,13 @@ app.post('/api/prepare-backup', async (req, res) => {
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, costEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber } = req.body;
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId' });
-        if (!costEth) return res.status(400).json({ success: false, error: 'Nav costEth' });
+        if (!fileCostEth) return res.status(400).json({ success: false, error: 'Nav fileCostEth' });
         
         const provider = getProvider();
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
@@ -401,23 +410,27 @@ app.post('/api/execute-backup', async (req, res) => {
         const repoId = await registryContract.getRepositoryByNFT(onChainTokenId);
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry' });
         
-        // 1. payTurbo
+        // ============================================
+        // 1. IEMAKSA UN FAILU AUGŠUPIELĀDE
+        // ============================================
+        
         const operatorWallet = getOperatorWallet(provider);
         const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
-        const costWei = ethers.parseEther(costEth);
-        const paymentId = ethers.id(repoName + Date.now().toString());
-        const payTx = await treasuryWrite.payTurbo(costWei, paymentId);
-        await payTx.wait();
         
-        // 2. Pagaida
+        const fileCostWei = ethers.parseEther(fileCostEth);
+        const filePaymentId = ethers.id(repoName + '-files-' + Date.now().toString());
+        const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId);
+        await filePayTx.wait();
+        console.log('✅ Failu apmaksa:', filePayTx.hash);
+        
         await new Promise(resolve => setTimeout(resolve, 5000));
         
-        // 3. Upload failus
         const turbo = getTurbo();
         const uploadResults = [];
         
         for (const file of files) {
             const fileBuffer = Buffer.from(file.content, 'base64');
+            
             const result = await turbo.uploadFile({
                 fileStreamFactory: () => Readable.from(fileBuffer),
                 fileSizeFactory: () => fileBuffer.length,
@@ -434,9 +447,13 @@ app.post('/api/execute-backup', async (req, res) => {
             });
             
             uploadResults.push({ path: file.path, txId: result.id, size: fileBuffer.length, hash: file.hash });
+            console.log('✅ Augšupielādēts:', file.path);
         }
         
-        // 4. Veido vēsturi
+        // ============================================
+        // 2. MANIFESTA SAGATAVOŠANA
+        // ============================================
+        
         const history = [...(previousHistory || [])];
         
         if (previousManifestId) {
@@ -447,7 +464,6 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
-        // 5. Veido manifestu — metadata SĀKUMĀ
         const backupCount = Number(await nftContract.getBackupCount(onChainTokenId));
         const newBackupNumber = backupCount + 1;
         
@@ -465,7 +481,6 @@ app.post('/api/execute-backup', async (req, res) => {
             history
         };
         
-        // Jaunie faili
         for (const file of uploadResults) {
             manifest.paths[file.path] = {
                 id: file.txId,
@@ -474,7 +489,6 @@ app.post('/api/execute-backup', async (req, res) => {
             };
         }
         
-        // Nemainītie faili
         for (const [filePath, info] of Object.entries(unchangedFiles || {})) {
             if (info && info.txId) {
                 manifest.paths[filePath] = {
@@ -491,6 +505,62 @@ app.post('/api/execute-backup', async (req, res) => {
         }
         
         const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
+        const manifestSize = manifestBuffer.length;
+        
+        const manifestWinc = await getWincForBytes(turbo, [manifestSize]);
+        const manifestCostEth = await getEthForBytes(turbo, manifestSize);
+        
+        // ============================================
+        // 3. ATGRIEŽ INFORMĀCIJU PAR MANIFESTA APMAKSU
+        // ============================================
+        
+        return res.json({
+            success: true,
+            step: 'files_uploaded',
+            manifestReady: true,
+            manifestSize,
+            manifestWinc: manifestWinc.toString(),
+            manifestCostEth,
+            fileCostEth,
+            uploadedFiles: uploadResults,
+            manifest: manifest,
+            previousManifestId,
+            previousBackupNumber,
+            previousHistory
+        });
+        
+    } catch (error) {
+        console.error('BACKUP EXECUTE ERROR', error);
+        return res.status(500).json({ success: false, error: errorMessage(error) });
+    }
+});
+
+app.post('/api/finalize-backup', async (req, res) => {
+    try {
+        const { repoName, manifest, manifestCostEth, walletAddress, previousHistory } = req.body;
+        
+        if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
+        if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest' });
+        if (!manifestCostEth) return res.status(400).json({ success: false, error: 'Nav manifestCostEth' });
+        if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
+        
+        const provider = getProvider();
+        const operatorWallet = getOperatorWallet(provider);
+        const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+        
+        // 1. Manifesta apmaksa
+        const manifestCostWei = ethers.parseEther(manifestCostEth);
+        const manifestPaymentId = ethers.id(repoName + '-manifest-' + Date.now().toString());
+        const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId);
+        await manifestPayTx.wait();
+        console.log('✅ Manifesta apmaksa:', manifestPayTx.hash);
+        
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // 2. Manifesta augšupielāde
+        const turbo = getTurbo();
+        const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
+        
         const manifestResult = await turbo.uploadFile({
             fileStreamFactory: () => Readable.from(manifestBuffer),
             fileSizeFactory: () => manifestBuffer.length,
@@ -505,17 +575,17 @@ app.post('/api/execute-backup', async (req, res) => {
             }
         });
         
+        console.log('✅ Manifests augšupielādēts:', manifestResult.id);
+        
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
-            uploadedFiles: uploadResults,
-            costEth,
-            paymentTx: payTx.hash,
-            history
+            manifestCostEth,
+            manifestPaymentTx: manifestPayTx.hash
         });
         
     } catch (error) {
-        console.error('BACKUP EXECUTE ERROR', error);
+        console.error('FINALIZE BACKUP ERROR', error);
         return res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
