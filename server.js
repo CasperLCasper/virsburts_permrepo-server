@@ -90,22 +90,52 @@ function getRepositoryHash(repoName) {
     return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repoName]));
 }
 
+// ============================================================
+// PILNĪGS IZMAKSU APRĒĶINS NO TURBO SDK
+// ============================================================
+
 async function getWincForBytes(turbo, byteSizes) {
     if (!Array.isArray(byteSizes) || byteSizes.length === 0) {
-        return 0n;
+        return { totalWinc: 0n, perFileWinc: [] };
     }
     
     const costs = await turbo.getUploadCosts({ bytes: byteSizes });
     
     let totalWinc = 0n;
+    const perFileWinc = [];
     
     for (const cost of costs) {
-        if (cost && cost.winc !== undefined) {
-            totalWinc += BigInt(String(cost.winc));
-        }
+        const winc = BigInt(String(cost?.winc || '0'));
+        perFileWinc.push(winc);
+        totalWinc += winc;
     }
     
-    return totalWinc;
+    return { totalWinc, perFileWinc };
+}
+
+async function isFreeUpload(turbo, totalBytes) {
+    // 1. Pārbauda getFreeStatus
+    try {
+        const { bytesRemaining } = await turbo.getFreeStatus();
+        
+        if (bytesRemaining !== null && bytesRemaining >= totalBytes) {
+            return true;
+        }
+    } catch (e) {
+        console.warn('getFreeStatus kļūda:', errorMessage(e));
+    }
+    
+    // 2. Pārbauda getUploadCosts
+    try {
+        const { totalWinc } = await getWincForBytes(turbo, [totalBytes]);
+        if (totalWinc === 0n) {
+            return true;
+        }
+    } catch (e) {
+        console.warn('getUploadCosts kļūda:', errorMessage(e));
+    }
+    
+    return false;
 }
 
 async function getEthForBytes(turbo, totalBytes) {
@@ -113,6 +143,12 @@ async function getEthForBytes(turbo, totalBytes) {
         return '0';
     }
     
+    // Vispirms pārbauda, vai ir bezmaksas
+    if (await isFreeUpload(turbo, totalBytes)) {
+        return '0';
+    }
+    
+    // Tikai tad aprēķina ETH cenu
     const { tokenPrice } = await turbo.getTokenPriceForBytes({ byteCount: totalBytes });
     return String(tokenPrice);
 }
@@ -345,7 +381,7 @@ app.post('/api/prepare-backup', async (req, res) => {
         const turbo = getTurbo();
         
         const fileSizes = changedFiles.map(file => file.size);
-        const fileWinc = await getWincForBytes(turbo, fileSizes);
+        const { totalWinc: fileWinc } = await getWincForBytes(turbo, fileSizes);
         const totalFileBytes = changedFiles.reduce((sum, file) => sum + file.size, 0);
         const fileCostEth = await getEthForBytes(turbo, totalFileBytes);
         
@@ -356,7 +392,7 @@ app.post('/api/prepare-backup', async (req, res) => {
         }
         
         const fileCostWei = ethers.parseEther(fileCostEth);
-        const hasEnoughTreasury = treasuryBalance >= fileCostWei;
+        const hasEnoughTreasury = fileCostWei === 0n ? true : treasuryBalance >= fileCostWei;
         
         return res.json({
             success: true,
@@ -410,22 +446,31 @@ app.post('/api/execute-backup', async (req, res) => {
         const repoId = await registryContract.getRepositoryByNFT(onChainTokenId);
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry' });
         
-        // ============================================
-        // 1. IEMAKSA UN FAILU AUGŠUPIELĀDE
-        // ============================================
+        const turbo = getTurbo();
         
-        const operatorWallet = getOperatorWallet(provider);
-        const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+        // ============================================
+        // 1. FAILU APMAKSA (ja nepieciešams)
+        // ============================================
         
         const fileCostWei = ethers.parseEther(fileCostEth);
-        const filePaymentId = ethers.id(repoName + '-files-' + Date.now().toString());
-        const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId);
-        await filePayTx.wait();
-        console.log('✅ Failu apmaksa:', filePayTx.hash);
         
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        if (fileCostWei > 0n) {
+            const operatorWallet = getOperatorWallet(provider);
+            const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+            const filePaymentId = ethers.id(repoName + '-files-' + Date.now().toString());
+            const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId);
+            await filePayTx.wait();
+            console.log('✅ Failu apmaksa:', filePayTx.hash);
+            
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        } else {
+            console.log('✅ Faili ir bezmaksas!');
+        }
         
-        const turbo = getTurbo();
+        // ============================================
+        // 2. FAILU AUGŠUPIELĀDE
+        // ============================================
+        
         const uploadResults = [];
         
         for (const file of files) {
@@ -451,7 +496,7 @@ app.post('/api/execute-backup', async (req, res) => {
         }
         
         // ============================================
-        // 2. MANIFESTA SAGATAVOŠANA
+        // 3. MANIFESTA SAGATAVOŠANA
         // ============================================
         
         const history = [...(previousHistory || [])];
@@ -507,11 +552,11 @@ app.post('/api/execute-backup', async (req, res) => {
         const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
         const manifestSize = manifestBuffer.length;
         
-        const manifestWinc = await getWincForBytes(turbo, [manifestSize]);
+        const { totalWinc: manifestWinc } = await getWincForBytes(turbo, [manifestSize]);
         const manifestCostEth = await getEthForBytes(turbo, manifestSize);
         
         // ============================================
-        // 3. ATGRIEŽ INFORMĀCIJU PAR MANIFESTA APMAKSU
+        // 4. ATGRIEŽ INFORMĀCIJU PAR MANIFESTU
         // ============================================
         
         return res.json({
@@ -523,10 +568,7 @@ app.post('/api/execute-backup', async (req, res) => {
             manifestCostEth,
             fileCostEth,
             uploadedFiles: uploadResults,
-            manifest: manifest,
-            previousManifestId,
-            previousBackupNumber,
-            previousHistory
+            manifest: manifest
         });
         
     } catch (error) {
@@ -537,7 +579,7 @@ app.post('/api/execute-backup', async (req, res) => {
 
 app.post('/api/finalize-backup', async (req, res) => {
     try {
-        const { repoName, manifest, manifestCostEth, walletAddress, previousHistory } = req.body;
+        const { repoName, manifest, manifestCostEth, walletAddress } = req.body;
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName' });
         if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest' });
@@ -545,20 +587,31 @@ app.post('/api/finalize-backup', async (req, res) => {
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress' });
         
         const provider = getProvider();
-        const operatorWallet = getOperatorWallet(provider);
-        const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
-        
-        // 1. Manifesta apmaksa
-        const manifestCostWei = ethers.parseEther(manifestCostEth);
-        const manifestPaymentId = ethers.id(repoName + '-manifest-' + Date.now().toString());
-        const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId);
-        await manifestPayTx.wait();
-        console.log('✅ Manifesta apmaksa:', manifestPayTx.hash);
-        
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
-        // 2. Manifesta augšupielāde
         const turbo = getTurbo();
+        
+        // ============================================
+        // 1. MANIFESTA APMAKSA (ja nepieciešams)
+        // ============================================
+        
+        const manifestCostWei = ethers.parseEther(manifestCostEth);
+        
+        if (manifestCostWei > 0n) {
+            const operatorWallet = getOperatorWallet(provider);
+            const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+            const manifestPaymentId = ethers.id(repoName + '-manifest-' + Date.now().toString());
+            const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId);
+            await manifestPayTx.wait();
+            console.log('✅ Manifesta apmaksa:', manifestPayTx.hash);
+            
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        } else {
+            console.log('✅ Manifests ir bezmaksas!');
+        }
+        
+        // ============================================
+        // 2. MANIFESTA AUGŠUPIELĀDE
+        // ============================================
+        
         const manifestBuffer = Buffer.from(JSON.stringify(manifest), 'utf8');
         
         const manifestResult = await turbo.uploadFile({
@@ -580,8 +633,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
-            manifestCostEth,
-            manifestPaymentTx: manifestPayTx.hash
+            manifestCostEth
         });
         
     } catch (error) {
