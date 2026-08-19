@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import session from 'express-session';
 import { Readable } from 'stream';
 import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
+import { Redis } from '@upstash/redis';
 
 // ============================================================
 // PATHS | CEĻI
@@ -44,6 +45,19 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const TURBO_TOKEN = process.env.TURBO_TOKEN || 'base-eth';
 const TURBO_UPLOAD_URL = process.env.TURBO_UPLOAD_URL || 'https://upload.services.ar-io.dev';
 const TURBO_PAYMENT_URL = process.env.TURBO_PAYMENT_URL || 'https://payment.services.ar-io.dev';
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+// ============================================================
+// REDIS | REDIS
+// ============================================================
+
+const redis = (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN)
+    ? new Redis({
+        url: UPSTASH_REDIS_REST_URL,
+        token: UPSTASH_REDIS_REST_TOKEN,
+    })
+    : null;
 
 // ============================================================
 // LOGGING HELPERS | LOGĒŠANAS PALĪGFUNKCIJAS
@@ -123,18 +137,6 @@ function getProvider() {
 // ============================================================
 // OPERATOR WALLET | OPERATORA MAKS
 // ============================================================
-//
-// Šis maks NETUR Treasury līdzekļus.
-// This wallet does NOT hold Treasury funds.
-//
-// Tas tikai paraksta transakciju:
-// It only signs the transaction:
-//
-// Treasury.payTurbo(...)
-//
-// ETH, kas maksā Turbo, nāk no Treasury līguma.
-// The ETH that pays Turbo comes from the Treasury contract.
-// ============================================================
 
 function getOperatorWallet(provider) {
     if (!OPERATOR_PRIVATE_KEY) throw new Error('OPERATOR_PRIVATE_KEY nav konfigurēts | OPERATOR_PRIVATE_KEY is not configured');
@@ -170,6 +172,33 @@ function errorMessage(error) {
 
 function getRepositoryHash(repoName) {
     return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repoName]));
+}
+
+// ============================================================
+// REDIS HELPERS | REDIS PALĪGFUNKCIJAS
+// ============================================================
+
+async function getUserCredits(walletAddress) {
+    if (!redis) return 0n;
+    
+    try {
+        const credits = await redis.get(`user:${walletAddress.toLowerCase()}:winc`);
+        return BigInt(String(credits || '0'));
+    } catch (e) {
+        logWarning('Redis get kļūda | Redis get error: ' + errorMessage(e));
+        return 0n;
+    }
+}
+
+async function setUserCredits(walletAddress, wincAmount) {
+    if (!redis) return;
+    
+    try {
+        await redis.set(`user:${walletAddress.toLowerCase()}:winc`, wincAmount.toString());
+        logInfo('Lietotāja kredīti | User credits', `${wincAmount} winc`);
+    } catch (e) {
+        logWarning('Redis set kļūda | Redis set error: ' + errorMessage(e));
+    }
 }
 
 // ============================================================
@@ -616,7 +645,29 @@ app.post('/api/prepare-backup', async (req, res) => {
         const fileSizes = changedFiles.map(file => file.size);
         const { totalWinc: fileWinc } = await getWincForBytes(turbo, fileSizes);
         const totalFileBytes = changedFiles.reduce((sum, file) => sum + file.size, 0);
-        const fileCostEth = await getEthForBytes(turbo, totalFileBytes);
+        
+        // Iegūst lietotāja kredītus no Redis
+        const userCredits = await getUserCredits(walletAddress);
+        logInfo('Lietotāja kredīti | User credits', userCredits.toString() + ' winc');
+        
+        let fileCostEth;
+        let newUserCredits;
+        
+        if (userCredits >= fileWinc) {
+            // Pietiek kredītu — nav jāmaksā!
+            newUserCredits = userCredits - fileWinc;
+            fileCostEth = '0';
+            logSuccess('Pietiek kredītu! | Enough credits!');
+            logInfo('Atlikums | Remaining', newUserCredits.toString() + ' winc');
+        } else {
+            // Jāmaksā starpība
+            const deficitWinc = fileWinc - userCredits;
+            logInfo('Deficīts | Deficit', deficitWinc.toString() + ' winc');
+            
+            fileCostEth = await getEthForBytes(turbo, totalFileBytes);
+            newUserCredits = 0n;
+            logInfo('Jāmaksā | Must pay', fileCostEth + ' ETH');
+        }
         
         logSection('🏦 TREASURY');
         let treasuryBalance = 0n;
@@ -644,6 +695,8 @@ app.post('/api/prepare-backup', async (req, res) => {
             totalBytes: totalFileBytes,
             fileWinc: fileWinc.toString(),
             fileCostEth,
+            userCredits: userCredits.toString(),
+            newUserCredits: newUserCredits.toString(),
             treasuryBalance: treasuryBalance.toString(),
             hasEnoughTreasury,
             hasPreviousBackup: backupCount > 0,
@@ -664,7 +717,7 @@ app.post('/api/prepare-backup', async (req, res) => {
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber, fileWinc, newUserCredits } = req.body;
         
         logSection('📤 EXECUTE BACKUP | IZPILDĪT BACKUPU');
         logInfo('Repo', repoName);
@@ -676,7 +729,7 @@ app.post('/api/execute-backup', async (req, res) => {
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs | files is not array' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
-        if (!fileCostEth) return res.status(400).json({ success: false, error: 'Nav fileCostEth | Missing fileCostEth' });
+        if (fileCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav fileCostEth | Missing fileCostEth' });
         
         const provider = getProvider();
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
@@ -720,7 +773,7 @@ app.post('/api/execute-backup', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 5000));
             logSuccess('Gaidīšana pabeigta | Waiting completed (5s)');
         } else {
-            logSuccess('Faili ir bezmaksas! | Files are free!');
+            logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
         // 2. FAILU AUGŠUPIELĀDE | FILE UPLOAD
@@ -754,7 +807,12 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess(`TX ID: ${result.id} (${uploadElapsed}ms)`);
         }
         
-        // 3. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // 3. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
+        await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
+        logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
+        
+        // 4. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
@@ -771,10 +829,6 @@ app.post('/api/execute-backup', async (req, res) => {
         history.sort((a, b) => Number(b.backupNumber) - Number(a.backupNumber));
         
         logInfo('Vēstures ieraksti | History entries', history.length);
-        if (history.length > 0) {
-            logInfo('Pirmais ieraksts | First entry', `Backup #${history[0].backupNumber}`);
-            logInfo('Pēdējais ieraksts | Last entry', `Backup #${history[history.length - 1].backupNumber}`);
-        }
         
         const backupCount = Number(await nftContract.getBackupCount(onChainTokenId));
         const newBackupNumber = backupCount + 1;
@@ -862,7 +916,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest | Missing manifest' });
-        if (!manifestCostEth) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
+        if (manifestCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
         
         const provider = getProvider();
@@ -1019,7 +1073,8 @@ app.get('/api/health', (req, res) => {
             nft: !!NFT_ADDRESS,
             subscription: !!SUBSCRIPTION_ADDRESS,
             registry: !!REGISTRY_ADDRESS,
-            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET && GITHUB_REDIRECT_URI)
+            githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET && GITHUB_REDIRECT_URI),
+            redis: !!redis
         }
     });
 });
@@ -1048,5 +1103,6 @@ app.listen(PORT, () => {
     logInfo('TURBO_TOKEN', TURBO_TOKEN);
     logInfo('TURBO_UPLOAD_URL', TURBO_UPLOAD_URL);
     logInfo('TURBO_PAYMENT_URL', TURBO_PAYMENT_URL);
+    logInfo('REDIS', redis ? '✅ IR | YES' : '❌ NAV | NO');
     console.log('='.repeat(60) + '\n');
 });
