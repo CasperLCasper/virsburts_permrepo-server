@@ -232,13 +232,6 @@ async function getEthForBytes(turbo, totalBytes) {
 // ============================================================
 // TURBO PAYMENT ADDRESS | TURBO MAKSĀJUMA ADRESE
 // ============================================================
-//
-// Iegūst Turbo payment adresi no Payment API /v1/info.
-// Gets the Turbo payment address from the Payment API /v1/info.
-//
-// Šī adrese tiek izmantota kā destination payTurbo() izsaukumā.
-// This address is used as destination in payTurbo() call.
-// ============================================================
 
 async function getTurboPaymentAddress() {
     try {
@@ -252,14 +245,10 @@ async function getTurboPaymentAddress() {
         
         const info = await response.json();
         
-        // Adrešu karte no Turbo Payment API
-        // Addresses map from Turbo Payment API
         if (!info.addresses) {
             throw new Error('Payment API neatgrieza addresses | Payment API did not return addresses');
         }
         
-        // Izvēlas pareizo adresi pēc token
-        // Selects the correct address based on token
         const addressMap = {
             'base-eth': info.addresses['base-eth'] || info.addresses['ethereum'],
             'ethereum': info.addresses['ethereum'],
@@ -715,8 +704,6 @@ app.post('/api/execute-backup', async (req, res) => {
         if (fileCostWei > 0n) {
             logInfo('Summa | Amount', fileCostEth + ' ETH');
             
-            // Iegūst Turbo payment adresi no Payment API
-            // Gets Turbo payment address from Payment API
             const turboAddress = await getTurboPaymentAddress();
             logInfo('Turbo adrese | Turbo address', turboAddress);
             
@@ -778,7 +765,15 @@ app.post('/api/execute-backup', async (req, res) => {
                 manifestId: previousManifestId,
                 url: `${ARWEAVE_GATEWAY}/raw/${previousManifestId}`
             });
-            logInfo('Vēstures ieraksti | History entries', history.length);
+        }
+        
+        // Kārto dilstošā secībā | Sort in descending order
+        history.sort((a, b) => Number(b.backupNumber) - Number(a.backupNumber));
+        
+        logInfo('Vēstures ieraksti | History entries', history.length);
+        if (history.length > 0) {
+            logInfo('Pirmais ieraksts | First entry', `Backup #${history[0].backupNumber}`);
+            logInfo('Pēdējais ieraksts | Last entry', `Backup #${history[history.length - 1].backupNumber}`);
         }
         
         const backupCount = Number(await nftContract.getBackupCount(onChainTokenId));
@@ -880,8 +875,6 @@ app.post('/api/finalize-backup', async (req, res) => {
         if (manifestCostWei > 0n) {
             logInfo('Summa | Amount', manifestCostEth + ' ETH');
             
-            // Iegūst Turbo payment adresi no Payment API
-            // Gets Turbo payment address from Payment API
             const turboAddress = await getTurboPaymentAddress();
             logInfo('Turbo adrese | Turbo address', turboAddress);
             
