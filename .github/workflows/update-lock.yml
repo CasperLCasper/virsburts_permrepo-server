@@ -1,13 +1,15 @@
-name: Generate package-lock.json
+name: Update package-lock.json
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
 
 permissions:
   contents: write
 
 jobs:
-  generate-lock:
+  update-lock:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +18,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Generate package-lock.json
+      - name: Generate or update package-lock.json
         run: npm install --package-lock-only --ignore-scripts
       
       - name: Commit & Push
@@ -24,6 +26,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          git add package-lock.json
-          git commit -m "chore: add package-lock.json [skip ci]"
-          git push
+          if [ -n "$(git status --porcelain package-lock.json)" ]; then
+            git add package-lock.json
+            git commit -m "chore: update package-lock.json [skip ci]"
+            git push
+          else
+            echo "package-lock.json jau ir aktuāls, nav izmaiņu."
+          fi
