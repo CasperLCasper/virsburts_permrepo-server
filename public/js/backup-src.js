@@ -13,6 +13,7 @@ let currentPreviousHistory = [];
 let currentPreviousManifestId = null;
 let currentPreviousBackupNumber = null;
 let currentUploadedFiles = [];
+let currentNewManifestCredits = '0';
 let hasDepositedFiles = false;
 let hasDepositedManifest = false;
 
@@ -216,11 +217,11 @@ async function prepareBackup() {
         document.getElementById('status').innerHTML = 
             `📦 Faili: ${result.files.length}<br>` +
             `💰 Failu izmaksas: ${result.fileCostEth} ETH<br>` +
-            `📄 Manifests: tiks aprēķināts pēc failu augšupielādes`;
+            `📄 Manifests: tiks aprēķināts pēc ZIP augšupielādes`;
         
         button.disabled = false;
-        button.textContent = 'Iemaksāt par failiem un augšupielādēt';
-        button.onclick = executeFilesUpload;
+        button.textContent = 'Iemaksāt par ZIP un augšupielādēt';
+        button.onclick = executeZipUpload;
     } else {
         showError(result.error || 'Kļūda');
         button.disabled = false;
@@ -228,7 +229,7 @@ async function prepareBackup() {
     }
 }
 
-async function executeFilesUpload() {
+async function executeZipUpload() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
     
@@ -242,7 +243,7 @@ async function executeFilesUpload() {
             const fileCostWei = ethers.parseEther(currentFileCostEth);
             
             if (balance < fileCostWei) {
-                setStatus('Iemaksājam Treasury par failiem...');
+                setStatus('Iemaksājam Treasury par ZIP...');
                 button.textContent = '⏳ Iemaksā...';
                 
                 const tx = await signer.sendTransaction({
@@ -260,8 +261,8 @@ async function executeFilesUpload() {
             hasDepositedFiles = true;
         }
         
-        setStatus('Serveris augšupielādē failus...');
-        button.textContent = '⏳ Faili...';
+        setStatus('Serveris veido ZIP un augšupielādē...');
+        button.textContent = '⏳ ZIP...';
         
         const response = await fetch('/api/execute-backup', {
             method: 'POST',
@@ -281,17 +282,18 @@ async function executeFilesUpload() {
         
         const result = await response.json();
         
-        if (result.success && result.step === 'files_uploaded') {
+        if (result.success && result.step === 'zip_uploaded') {
             currentUploadedFiles = result.uploadedFiles || [];
             currentManifest = result.manifest;
             currentManifestCostEth = result.manifestCostEth || '0';
+            currentNewManifestCredits = result.newManifestCredits || '0';
             
-            setStatus('✅ Faili augšupielādēti!');
+            setStatus('✅ ZIP augšupielādēts!');
             button.textContent = 'Iemaksāt par manifestu un pabeigt';
             button.onclick = finalizeBackup;
             
             document.getElementById('status').innerHTML = 
-                `✅ Faili augšupielādēti!<br>` +
+                `✅ ZIP augšupielādēts!<br>` +
                 `📄 Manifesta izmērs: ${(result.manifestSize / 1024).toFixed(2)} KB<br>` +
                 `💰 Manifesta izmaksas: ${result.manifestCostEth} ETH<br><br>` +
                 `Kopā: ${(parseFloat(currentFileCostEth) + parseFloat(result.manifestCostEth)).toFixed(18)} ETH`;
@@ -311,7 +313,7 @@ async function executeFilesUpload() {
             showError(e.message);
         }
         button.disabled = false;
-        button.textContent = 'Iemaksāt par failiem un augšupielādēt';
+        button.textContent = 'Iemaksāt par ZIP un augšupielādēt';
     }
 }
 
@@ -357,7 +359,8 @@ async function finalizeBackup() {
                 repoName: currentRepo,
                 manifest: currentManifest,
                 manifestCostEth: currentManifestCostEth,
-                walletAddress: userAddress
+                walletAddress: userAddress,
+                newManifestCredits: currentNewManifestCredits
             })
         });
         
@@ -374,8 +377,8 @@ async function finalizeBackup() {
             document.getElementById('status').innerHTML = 
                 `✅ Backups veiksmīgs!<br>` +
                 `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${result.manifestTxId}" target="_blank">ar://${result.manifestTxId}</a><br>` +
-                `Faili: ${currentUploadedFiles.length}<br>` +
-                `Failu izmaksas: ${currentFileCostEth} ETH<br>` +
+                `Faili ZIP: ${currentUploadedFiles.length}<br>` +
+                `ZIP izmaksas: ${currentFileCostEth} ETH<br>` +
                 `Manifesta izmaksas: ${currentManifestCostEth} ETH`;
             
         } else {
