@@ -11,6 +11,7 @@ import session from 'express-session';
 import { Readable } from 'stream';
 import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 import { Redis } from '@upstash/redis';
+import JSZip from 'jszip';
 
 // ============================================================
 // PATHS | CEĻI
@@ -605,8 +606,8 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         for (const file of currentFiles) {
             const previousFile = previousPaths[file.path];
-            if (previousFile && previousFile.id && previousFile.hash && previousFile.hash === file.hash) {
-                unchangedFiles[file.path] = { txId: previousFile.id, size: file.size, hash: file.hash };
+            if (previousFile && previousFile.zipId && previousFile.hash && previousFile.hash === file.hash) {
+                unchangedFiles[file.path] = { zipId: previousFile.zipId, size: file.size, hash: file.hash };
             } else {
                 changedFiles.push(file);
             }
@@ -642,9 +643,11 @@ app.post('/api/prepare-backup', async (req, res) => {
         logSection('⚡ TURBO IZMAKSAS | TURBO COSTS');
         const turbo = getTurbo();
         
-        const fileSizes = changedFiles.map(file => file.size);
-        const { totalWinc: fileWinc } = await getWincForBytes(turbo, fileSizes);
         const totalFileBytes = changedFiles.reduce((sum, file) => sum + file.size, 0);
+        
+        // Aprēķina aptuveno ZIP izmēru
+        const estimatedZipSize = Math.ceil(totalFileBytes * 1.1); // 10% rezerve ZIP overhead
+        const { totalWinc: fileWinc } = await getWincForBytes(turbo, [estimatedZipSize]);
         
         const userCredits = await getUserCredits(walletAddress);
         logInfo('Lietotāja kredīti | User credits', userCredits.toString() + ' winc');
@@ -661,7 +664,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             const deficitWinc = fileWinc - userCredits;
             logInfo('Deficīts | Deficit', deficitWinc.toString() + ' winc');
             
-            fileCostEth = await getEthForBytes(turbo, totalFileBytes);
+            fileCostEth = await getEthForBytes(turbo, estimatedZipSize);
             newUserCredits = 0n;
             logInfo('Jāmaksā | Must pay', fileCostEth + ' ETH');
         }
@@ -690,6 +693,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             previousBackupNumber,
             fileCount: changedFiles.length,
             totalBytes: totalFileBytes,
+            estimatedZipSize,
             fileWinc: fileWinc.toString(),
             fileCostEth,
             userCredits: userCredits.toString(),
@@ -718,7 +722,7 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logSection('📤 EXECUTE BACKUP | IZPILDĪT BACKUPU');
         logInfo('Repo', repoName);
-        logInfo('Faili | Files', files.length);
+        logInfo('Mainītie faili | Changed files', files.length);
         logInfo('Token ID', tokenId);
         logInfo('Failu izmaksas | File costs', fileCostEth + ' ETH');
         
@@ -747,10 +751,23 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const turbo = getTurbo();
         
-        // 1. FAILU APMAKSA | FILE PAYMENT
+        // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
+        logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
+        const zip = new JSZip();
+        
+        for (const file of files) {
+            const fileBuffer = Buffer.from(file.content, 'base64');
+            zip.file(file.path, fileBuffer);
+            logInfo(`Pievienots | Added: ${file.path}`, fileBuffer.length + ' bytes');
+        }
+        
+        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+        logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
+        
+        // 2. ZIP APMAKSA | ZIP PAYMENT
         const fileCostWei = ethers.parseEther(fileCostEth);
         
-        logSection('💳 FAILU APMAKSA | FILE PAYMENT');
+        logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
         if (fileCostWei > 0n) {
             logInfo('Summa | Amount', fileCostEth + ' ETH');
             
@@ -759,7 +776,7 @@ app.post('/api/execute-backup', async (req, res) => {
             
             const operatorWallet = getOperatorWallet(provider);
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
-            const filePaymentId = ethers.id(repoName + '-files-' + Date.now().toString());
+            const filePaymentId = ethers.id(repoName + '-zip-' + Date.now().toString());
             const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId, turboAddress);
             await filePayTx.wait();
             
@@ -773,43 +790,32 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
-        // 2. FAILU AUGŠUPIELĀDE | FILE UPLOAD
-        logSection('📤 FAILU AUGŠUPIELĀDE | FILE UPLOAD');
-        const uploadResults = [];
+        // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
+        logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
+        const startUpload = Date.now();
+        const zipResult = await turbo.uploadFile({
+            fileStreamFactory: () => Readable.from(zipBuffer),
+            fileSizeFactory: () => zipBuffer.length,
+            dataItemOpts: {
+                tags: [
+                    { name: 'App-Name', value: 'PermRepo' },
+                    { name: 'Repo', value: repoName },
+                    { name: 'Type', value: 'backup-archive' },
+                    { name: 'Content-Type', value: 'application/zip' },
+                    { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
+                ]
+            }
+        });
+        const uploadElapsed = Date.now() - startUpload;
         
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            const fileBuffer = Buffer.from(file.content, 'base64');
-            
-            logInfo(`[${i + 1}/${files.length}] ${file.path}`, fileBuffer.length + ' bytes');
-            
-            const startUpload = Date.now();
-            const result = await turbo.uploadFile({
-                fileStreamFactory: () => Readable.from(fileBuffer),
-                fileSizeFactory: () => fileBuffer.length,
-                dataItemOpts: {
-                    tags: [
-                        { name: 'App-Name', value: 'PermRepo' },
-                        { name: 'Repo', value: repoName },
-                        { name: 'File-Path', value: file.path },
-                        { name: 'Content-Type', value: getContentType(file.path) },
-                        { name: 'Content-SHA256', value: file.hash },
-                        { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
-                    ]
-                }
-            });
-            const uploadElapsed = Date.now() - startUpload;
-            
-            uploadResults.push({ path: file.path, txId: result.id, size: fileBuffer.length, hash: file.hash });
-            logSuccess(`TX ID: ${result.id} (${uploadElapsed}ms)`);
-        }
+        logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
-        // 3. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
-        // 4. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
@@ -840,24 +846,32 @@ app.post('/api/execute-backup', async (req, res) => {
             manifest: 'arweave/paths',
             version: '0.2.0',
             index: { path: 'README.md' },
+            archive: {
+                id: zipResult.id,
+                url: `${ARWEAVE_GATEWAY}/raw/${zipResult.id}`,
+                contains: files.map(file => ({
+                    path: file.path,
+                    hash: file.hash
+                }))
+            },
             paths: {},
             history
         };
         
-        for (const file of uploadResults) {
+        // Pievieno mainītos failus no jaunā ZIP
+        for (const file of files) {
             manifest.paths[file.path] = {
-                id: file.txId,
-                hash: file.hash,
-                url: `${ARWEAVE_GATEWAY}/raw/${file.txId}`
+                zipId: zipResult.id,
+                hash: file.hash
             };
         }
         
+        // Pievieno nemainītos failus ar veco zipId
         for (const [filePath, info] of Object.entries(unchangedFiles || {})) {
-            if (info && info.txId) {
+            if (info && info.zipId) {
                 manifest.paths[filePath] = {
-                    id: info.txId,
-                    hash: info.hash,
-                    url: `${ARWEAVE_GATEWAY}/raw/${info.txId}`
+                    zipId: info.zipId,
+                    hash: info.hash
                 };
             }
         }
@@ -873,7 +887,6 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const { totalWinc: manifestWinc } = await getWincForBytes(turbo, [manifestSize]);
         
-        // Pārbauda lietotāja kredītus manifestam
         const currentUserCredits = await getUserCredits(walletAddress);
         let manifestCostEth;
         let newManifestCredits;
@@ -891,17 +904,17 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logInfo('Manifesta Winc | Manifest Winc', manifestWinc.toString());
         logInfo('Manifesta ETH | Manifest ETH', manifestCostEth + ' ETH');
-        logInfo('Manifesta bezmaksas | Manifest free', manifestWinc === 0n ? '✅ JĀ | YES' : '❌ NĒ | NO');
         
         return res.json({
             success: true,
-            step: 'files_uploaded',
+            step: 'zip_uploaded',
             manifestReady: true,
+            zipTxId: zipResult.id,
             manifestSize,
             manifestWinc: manifestWinc.toString(),
             manifestCostEth,
             fileCostEth,
-            uploadedFiles: uploadResults,
+            uploadedFiles: files.map(file => ({ path: file.path, txId: zipResult.id, size: file.size, hash: file.hash })),
             manifest: manifest,
             newManifestCredits: newManifestCredits.toString()
         });
