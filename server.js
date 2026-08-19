@@ -646,7 +646,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         const { totalWinc: fileWinc } = await getWincForBytes(turbo, fileSizes);
         const totalFileBytes = changedFiles.reduce((sum, file) => sum + file.size, 0);
         
-        // Iegūst lietotāja kredītus no Redis
         const userCredits = await getUserCredits(walletAddress);
         logInfo('Lietotāja kredīti | User credits', userCredits.toString() + ' winc');
         
@@ -654,13 +653,11 @@ app.post('/api/prepare-backup', async (req, res) => {
         let newUserCredits;
         
         if (userCredits >= fileWinc) {
-            // Pietiek kredītu — nav jāmaksā!
             newUserCredits = userCredits - fileWinc;
             fileCostEth = '0';
             logSuccess('Pietiek kredītu! | Enough credits!');
             logInfo('Atlikums | Remaining', newUserCredits.toString() + ' winc');
         } else {
-            // Jāmaksā starpība
             const deficitWinc = fileWinc - userCredits;
             logInfo('Deficīts | Deficit', deficitWinc.toString() + ' winc');
             
@@ -825,7 +822,6 @@ app.post('/api/execute-backup', async (req, res) => {
             });
         }
         
-        // Kārto dilstošā secībā | Sort in descending order
         history.sort((a, b) => Number(b.backupNumber) - Number(a.backupNumber));
         
         logInfo('Vēstures ieraksti | History entries', history.length);
@@ -876,7 +872,22 @@ app.post('/api/execute-backup', async (req, res) => {
         logInfo('Manifesta izmērs | Manifest size', manifestSize + ' bytes');
         
         const { totalWinc: manifestWinc } = await getWincForBytes(turbo, [manifestSize]);
-        const manifestCostEth = await getEthForBytes(turbo, manifestSize);
+        
+        // Pārbauda lietotāja kredītus manifestam
+        const currentUserCredits = await getUserCredits(walletAddress);
+        let manifestCostEth;
+        let newManifestCredits;
+        
+        if (currentUserCredits >= manifestWinc) {
+            newManifestCredits = currentUserCredits - manifestWinc;
+            manifestCostEth = '0';
+            logSuccess('Manifestam pietiek kredītu! | Enough credits for manifest!');
+        } else {
+            const manifestDeficit = manifestWinc - currentUserCredits;
+            logInfo('Manifesta deficīts | Manifest deficit', manifestDeficit.toString() + ' winc');
+            manifestCostEth = await getEthForBytes(turbo, manifestSize);
+            newManifestCredits = 0n;
+        }
         
         logInfo('Manifesta Winc | Manifest Winc', manifestWinc.toString());
         logInfo('Manifesta ETH | Manifest ETH', manifestCostEth + ' ETH');
@@ -891,7 +902,8 @@ app.post('/api/execute-backup', async (req, res) => {
             manifestCostEth,
             fileCostEth,
             uploadedFiles: uploadResults,
-            manifest: manifest
+            manifest: manifest,
+            newManifestCredits: newManifestCredits.toString()
         });
         
     } catch (error) {
@@ -908,7 +920,7 @@ app.post('/api/execute-backup', async (req, res) => {
 
 app.post('/api/finalize-backup', async (req, res) => {
     try {
-        const { repoName, manifest, manifestCostEth, walletAddress } = req.body;
+        const { repoName, manifest, manifestCostEth, walletAddress, newManifestCredits } = req.body;
         
         logSection('📄 FINALIZE BACKUP | PABEIGT BACKUPU');
         logInfo('Repo', repoName);
@@ -945,7 +957,7 @@ app.post('/api/finalize-backup', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 5000));
             logSuccess('Gaidīšana pabeigta | Waiting completed (5s)');
         } else {
-            logSuccess('Manifests ir bezmaksas! | Manifest is free!');
+            logSuccess('Manifests izmanto kredītus! | Manifest uses credits!');
         }
         
         // 2. MANIFESTA AUGŠUPIELĀDE | MANIFEST UPLOAD
@@ -970,6 +982,11 @@ app.post('/api/finalize-backup', async (req, res) => {
         const uploadElapsed = Date.now() - startUpload;
         
         logSuccess(`TX ID: ${manifestResult.id} (${uploadElapsed}ms)`);
+        
+        // 3. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
+        await setUserCredits(walletAddress, BigInt(newManifestCredits || '0'));
+        logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
         logSection('✅ BACKUPS VEIKSMĪGS | BACKUP SUCCESSFUL');
         logInfo('Manifests', 'ar://' + manifestResult.id);
