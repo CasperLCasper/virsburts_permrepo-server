@@ -13,9 +13,9 @@ import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
-// Importējam Merkle funkcijas no jaunā faila.
-// Import Merkle functions from the new file.
-import { calculateMerkleRoot, submitBackupWithMerkle } from './merkle.js';
+// Importējam visus healthChecks.
+// Import all healthChecks.
+import { checkAllServices } from './healthChecks.js';
 
 // ============================================================
 // PATHS | CEĻI
@@ -754,8 +754,40 @@ app.post('/api/execute-backup', async (req, res) => {
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry | Repo not registered in Registry' });
         
         const turbo = getTurbo();
+
+        // ============================================================
+        // 0. FALSE POSITIVE PĀRBAUDES | FALSE POSITIVE CHECKS
+        // ============================================================
+
+        logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE | COMBINED CRITICAL SERVICES CHECK');
+
+        const healthParams = {
+            redis,
+            rpcUrl: RPC_URL,
+            operatorPrivateKey: OPERATOR_PRIVATE_KEY,
+            treasuryAddress: TREASURY_ADDRESS,
+            nftAddress: NFT_ADDRESS,
+            subscriptionAddress: SUBSCRIPTION_ADDRESS,
+            registryAddress: REGISTRY_ADDRESS
+        };
+
+        const health = await checkAllServices(healthParams);
+
+        if (!health.allHealthy) {
+            logError('❌ Viens vai vairāki servisi nav pieejami');
+            return res.status(503).json({
+                success: false,
+                error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
+                health
+            });
+        }
+
+        logSuccess('✅ Visi servisi ir pieejami – sākam backupu!');
         
+        // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
+        // ============================================================
+
         logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
         const zip = new JSZip();
         
@@ -768,7 +800,10 @@ app.post('/api/execute-backup', async (req, res) => {
         const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
         logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
         
+        // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
+        // ============================================================
+
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
@@ -794,7 +829,10 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
+        // ============================================================
         // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
+        // ============================================================
+
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
@@ -814,12 +852,18 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
+        // ============================================================
         // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        // ============================================================
+
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
+        // ============================================================
         // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // ============================================================
+
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
@@ -937,16 +981,27 @@ app.post('/api/execute-backup', async (req, res) => {
 
 app.post('/api/finalize-backup', async (req, res) => {
     try {
-        const { repoName, manifest, manifestCostEth, walletAddress, newManifestCredits } = req.body;
+        const { 
+            repoName, 
+            manifest, 
+            manifestCostEth, 
+            walletAddress, 
+            newManifestCredits,
+            tokenId,
+            files
+        } = req.body;
         
         logSection('📄 FINALIZE BACKUP | PABEIGT BACKUPU');
         logInfo('Repo', repoName);
+        logInfo('Token ID', tokenId);
+        logInfo('Faili | Files', files ? files.length : 0);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest | Missing manifest' });
         if (manifestCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
+        if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
         
         const provider = getProvider();
         const turbo = getTurbo();
@@ -1007,13 +1062,12 @@ app.post('/api/finalize-backup', async (req, res) => {
         
         // 4. IESNIEDZ MERKLE SAKNI NFT LĪGUMĀ | SUBMIT MERKLE ROOT TO NFT CONTRACT
         logSection('🔐 MERKLE SAKNES IESNIEGŠANA | MERKLE ROOT SUBMISSION');
-        const files = req.body.files || []; // Pieņem, ka faili tiek nodoti req.body
         const merkleTxHash = await submitBackupWithMerkle({
-            tokenId: tokenId, // tokenId ir pieejams no req.body vai iepriekšējiem soļiem
+            tokenId: tokenId,
             manifestTxId: manifestResult.id,
-            files: files, // Failu saraksts ar hash
+            files: files || [],
             deadline: Math.floor(Date.now() / 1000) + 600,
-            signature: null, // Paraksts tiks sagatavots merkle.js
+            signature: null,
             nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
             readContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider),
             signerContract: getOperatorWallet(provider)
