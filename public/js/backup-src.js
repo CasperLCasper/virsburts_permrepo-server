@@ -1,6 +1,5 @@
-// ============================================================
-// IMPORTS | IMPORTI
-// ============================================================
+// backup-src.js
+// Priekšpuses loģika backupu un atjaunošanai.
 
 const { ethers } = window;
 
