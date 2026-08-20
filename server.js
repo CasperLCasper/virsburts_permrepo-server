@@ -17,6 +17,10 @@ import JSZip from 'jszip';
 // Import all healthChecks.
 import { checkAllServices } from './healthChecks.js';
 
+// Importējam Merkle funkciju.
+// Import Merkle function.
+import { submitBackupWithMerkle } from './merkle.js';
+
 // ============================================================
 // PATHS | CEĻI
 // ============================================================
