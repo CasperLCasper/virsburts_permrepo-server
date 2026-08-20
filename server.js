@@ -98,7 +98,9 @@ const NFT_ABI = [
     "function ownerOf(uint256 tokenId) external view returns (address)",
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)"
+    "function getNonce(uint256 tokenId) external view returns (uint256)",
+    // PIEVIENO addBackup:
+    "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external"
 ];
 
 const SUBSCRIPTION_ABI = [
@@ -754,10 +756,7 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const turbo = getTurbo();
         
-        // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
-        // ============================================================
-
         logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
         const zip = new JSZip();
         
@@ -770,10 +769,7 @@ app.post('/api/execute-backup', async (req, res) => {
         const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
         logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
         
-        // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
-        // ============================================================
-
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
@@ -799,10 +795,7 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
-        // ============================================================
         // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
-        // ============================================================
-
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
@@ -822,18 +815,12 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
-        // ============================================================
         // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
-        // ============================================================
-
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
-        // ============================================================
         // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
-        // ============================================================
-
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
