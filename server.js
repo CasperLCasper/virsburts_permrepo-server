@@ -13,12 +13,7 @@ import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
-// Importējam veselības pārbaudes.
-// Import health checks.
 import { checkAllServices } from './healthChecks.js';
-
-// Importējam Merkle funkciju.
-// Import Merkle function.
 import { submitBackupWithMerkle } from './merkle.js';
 
 // ============================================================
