@@ -13,8 +13,8 @@ import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
-// Importējam visus healthChecks.
-// Import all healthChecks.
+// Importējam veselības pārbaudes.
+// Import health checks.
 import { checkAllServices } from './healthChecks.js';
 
 // Importējam Merkle funkciju.
@@ -760,7 +760,7 @@ app.post('/api/execute-backup', async (req, res) => {
         const turbo = getTurbo();
 
         // ============================================================
-        // 0. FALSE POSITIVE PĀRBAUDES | FALSE POSITIVE CHECKS
+        // 0. VESELĪBAS PĀRBAUDES (PIRMS payTurbo()) | HEALTH CHECKS (BEFORE payTurbo())
         // ============================================================
 
         logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE | COMBINED CRITICAL SERVICES CHECK');
