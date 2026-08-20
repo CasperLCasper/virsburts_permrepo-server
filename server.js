@@ -753,35 +753,6 @@ app.post('/api/execute-backup', async (req, res) => {
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry | Repo not registered in Registry' });
         
         const turbo = getTurbo();
-
-        // ============================================================
-        // 0. VESELĪBAS PĀRBAUDES (PIRMS payTurbo()) | HEALTH CHECKS (BEFORE payTurbo())
-        // ============================================================
-
-        logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE | COMBINED CRITICAL SERVICES CHECK');
-
-        const healthParams = {
-            redis,
-            rpcUrl: RPC_URL,
-            operatorPrivateKey: OPERATOR_PRIVATE_KEY,
-            treasuryAddress: TREASURY_ADDRESS,
-            nftAddress: NFT_ADDRESS,
-            subscriptionAddress: SUBSCRIPTION_ADDRESS,
-            registryAddress: REGISTRY_ADDRESS
-        };
-
-        const health = await checkAllServices(healthParams);
-
-        if (!health.allHealthy) {
-            logError('❌ Viens vai vairāki servisi nav pieejami');
-            return res.status(503).json({
-                success: false,
-                error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
-                health
-            });
-        }
-
-        logSuccess('✅ Visi servisi ir pieejami – sākam backupu!');
         
         // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
@@ -1135,7 +1106,6 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
     });
     
     if (!response.ok) throw new Error(`GitHub API kļūda | error: ${response.status}`);
-    
     const contents = await response.json();
     if (!Array.isArray(contents)) return files;
     
