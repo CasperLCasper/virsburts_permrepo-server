@@ -13,9 +13,6 @@ import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
-import { checkAllServices } from './healthChecks.js';
-import { submitBackupWithMerkle, calculateMerkleRoot } from './merkle.js';
-
 // ============================================================
 // PATHS | CEĻI
 // ============================================================
@@ -98,8 +95,7 @@ const NFT_ABI = [
     "function ownerOf(uint256 tokenId) external view returns (address)",
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)",
-    "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external"
+    "function getNonce(uint256 tokenId) external view returns (uint256)"
 ];
 
 const SUBSCRIPTION_ABI = [
@@ -1012,100 +1008,11 @@ app.post('/api/finalize-backup', async (req, res) => {
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
-            manifestURI: 'ar://' + manifestResult.id,
             manifestCostEth
         });
         
     } catch (error) {
         logSection('❌ FINALIZE BACKUP ERROR');
-        logError(errorMessage(error));
-        console.error(error);
-        return res.status(500).json({ success: false, error: errorMessage(error) });
-    }
-});
-
-// ============================================================
-// FINALIZE BACKUP SIGN | PARAKSTĪT UN IERAKSTĪT BACKUPU
-// ============================================================
-
-app.post('/api/finalize-backup/sign', async (req, res) => {
-    try {
-        const { tokenId, manifestTxId, files, deadline, signature } = req.body;
-        
-        logSection('📝 IERAKSTA BACKUPU BLOKĶĒDĒ | RECORD BACKUP ON BLOCKCHAIN');
-        logInfo('Token ID', tokenId);
-        logInfo('Manifest TX ID', manifestTxId);
-        logInfo('Failu skaits | Files count', files ? files.length : 0);
-        
-        // Validācija
-        if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
-        if (!manifestTxId) return res.status(400).json({ success: false, error: 'Nav manifestTxId | Missing manifestTxId' });
-        if (!signature) return res.status(400).json({ success: false, error: 'Nav signature | Missing signature' });
-        if (!deadline) return res.status(400).json({ success: false, error: 'Nav deadline | Missing deadline' });
-        
-        const provider = getProvider();
-        const operatorWallet = getOperatorWallet(provider);
-        const nftWriteContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, operatorWallet);
-        const nftReadContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
-        
-        // Izsauc submitBackupWithMerkle ar visiem nepieciešamajiem parametriem
-        const result = await submitBackupWithMerkle({
-            tokenId: tokenId,
-            manifestTxId: manifestTxId,
-            files: files || [],
-            deadline: deadline,
-            signature: signature,
-            nftContract: nftWriteContract
-        });
-        
-        // VERIFICĒ MANIFESTA URI BLOKĶĒDĒ
-        logSection('🔍 VERIFICĒ MANIFESTA URI BLOKĶĒDĒ | VERIFY MANIFEST URI ON BLOCKCHAIN');
-        
-        try {
-            const manifestURIOnChain = await nftReadContract.getManifestURI(tokenId);
-            logInfo('Manifesta URI blokķēdē | Manifest URI on chain', manifestURIOnChain);
-            
-            // Verificē URI
-            const expectedURI = `ar://${manifestTxId}`;
-            if (manifestURIOnChain === expectedURI) {
-                logSuccess('✅ Manifesta URI veiksmīgi ierakstīts un verificēts!');
-            } else {
-                logWarning(`⚠️ URI nesakrīt! Sagaidīts: ${expectedURI}, Ierakstīts: ${manifestURIOnChain}`);
-            }
-            
-            logSection('✅ BACKUPS VEIKSMĪGI IERAKSTĪTS | BACKUP SUCCESSFULLY RECORDED');
-            logInfo('Manifesta URI | Manifest URI', result.manifestURI);
-            logInfo('URI blokķēdē | URI on chain', manifestURIOnChain);
-            logInfo('Manifesta hash | Manifest hash', result.manifestHash);
-            logInfo('Merkle sakne | Merkle root', result.merkleRoot);
-            logInfo('Transakcija | Transaction', result.txHash);
-            
-            return res.json({ 
-                success: true, 
-                addBackupTxHash: result.txHash,
-                manifestURI: result.manifestURI,
-                manifestURIOnChain: manifestURIOnChain,
-                merkleRoot: result.merkleRoot
-            });
-            
-        } catch (verifyError) {
-            logWarning('Nevar verificēt URI | Cannot verify URI: ' + errorMessage(verifyError));
-            
-            logSection('✅ BACKUPS IERAKSTĪTS (BEZ VERIFIKĀCIJAS) | BACKUP RECORDED (WITHOUT VERIFICATION)');
-            logInfo('Manifesta URI | Manifest URI', result.manifestURI);
-            logInfo('Transakcija | Transaction', result.txHash);
-            
-            return res.json({ 
-                success: true, 
-                addBackupTxHash: result.txHash,
-                manifestURI: result.manifestURI,
-                manifestURIOnChain: null,
-                merkleRoot: result.merkleRoot
-            });
-        }
-        
-    } catch (error) {
-        logSection('❌ SIGN/BACKUP RECORD ERROR');
         logError(errorMessage(error));
         console.error(error);
         return res.status(500).json({ success: false, error: errorMessage(error) });
