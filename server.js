@@ -99,7 +99,6 @@ const NFT_ABI = [
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
     "function getNonce(uint256 tokenId) external view returns (uint256)",
-    // PIEVIENO addBackup:
     "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external"
 ];
 
@@ -756,7 +755,10 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const turbo = getTurbo();
         
+        // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
+        // ============================================================
+
         logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
         const zip = new JSZip();
         
@@ -769,7 +771,10 @@ app.post('/api/execute-backup', async (req, res) => {
         const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
         logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
         
+        // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
+        // ============================================================
+
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
@@ -795,7 +800,10 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
+        // ============================================================
         // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
+        // ============================================================
+
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
@@ -815,12 +823,18 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
+        // ============================================================
         // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        // ============================================================
+
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
+        // ============================================================
         // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // ============================================================
+
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
@@ -945,7 +959,8 @@ app.post('/api/finalize-backup', async (req, res) => {
             walletAddress, 
             newManifestCredits,
             tokenId,
-            files
+            files,
+            signature
         } = req.body;
         
         logSection('📄 FINALIZE BACKUP | PABEIGT BACKUPU');
@@ -959,6 +974,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         if (manifestCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
+        if (!signature) return res.status(400).json({ success: false, error: 'Nav signature | Missing signature' });
         
         const provider = getProvider();
         const turbo = getTurbo();
@@ -1024,10 +1040,10 @@ app.post('/api/finalize-backup', async (req, res) => {
             manifestTxId: manifestResult.id,
             files: files || [],
             deadline: Math.floor(Date.now() / 1000) + 600,
-            signature: null,
+            signature: signature,
             nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
             readContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider),
-            signerContract: getOperatorWallet(provider)
+            signerContract: null // NAV VAJADZĪGS
         });
         
         logSuccess('Merkle sakne iesniegta! | Merkle root submitted!');
