@@ -53,12 +53,6 @@ const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 // ============================================================
-// HEALTH CHECKS TOGGLE | VESELĪBAS PĀRBAUŽU SLĒDZIS
-// ============================================================
-
-const HEALTH_CHECKS_ENABLED = process.env.HEALTH_CHECKS_ENABLED === 'true';
-
-// ============================================================
 // REDIS | REDIS
 // ============================================================
 
@@ -519,43 +513,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         logInfo('Repo', repoName);
         logInfo('Wallet', walletAddress);
         
-        // ============================================================
-        // VESELĪBAS PĀRBAUDES (PIRMS JEBKĀDA DARBA) | HEALTH CHECKS (BEFORE ANY WORK)
-        // ============================================================
-        
-        if (HEALTH_CHECKS_ENABLED) {
-            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
-            
-            const healthParams = {
-                redis,
-                rpcUrl: RPC_URL,
-                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
-                treasuryAddress: TREASURY_ADDRESS,
-                nftAddress: NFT_ADDRESS,
-                subscriptionAddress: SUBSCRIPTION_ADDRESS,
-                registryAddress: REGISTRY_ADDRESS
-            };
-            
-            const health = await checkAllServices(healthParams);
-            
-            if (!health.allHealthy) {
-                logError('❌ Servisi nav pieejami! Process tiek BLOĶĒTS!');
-                return res.status(503).json({
-                    success: false,
-                    error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
-                    health
-                });
-            }
-            
-            logSuccess('✅ Visi servisi ir pieejami!');
-        } else {
-            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
-        }
-        
-        // ============================================================
-        // TURPINA DARBU (TIKAI PĒC PĀRBAUDES) | CONTINUE WORK (AFTER CHECK)
-        // ============================================================
-        
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repo nosaukuma | Missing repo name' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet adreses | Missing wallet address' });
         if (!githubToken) return res.status(401).json({ success: false, error: 'Nav GitHub autorizācijas | No GitHub authorization' });
@@ -798,10 +755,7 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const turbo = getTurbo();
         
-        // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
-        // ============================================================
-        
         logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
         const zip = new JSZip();
         
@@ -814,10 +768,7 @@ app.post('/api/execute-backup', async (req, res) => {
         const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
         logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
         
-        // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
-        // ============================================================
-        
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
@@ -843,10 +794,7 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
-        // ============================================================
         // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
-        // ============================================================
-        
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
@@ -866,18 +814,12 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
-        // ============================================================
         // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
-        // ============================================================
-        
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
-        // ============================================================
         // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
-        // ============================================================
-        
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
@@ -995,27 +937,16 @@ app.post('/api/execute-backup', async (req, res) => {
 
 app.post('/api/finalize-backup', async (req, res) => {
     try {
-        const { 
-            repoName, 
-            manifest, 
-            manifestCostEth, 
-            walletAddress, 
-            newManifestCredits,
-            tokenId,
-            files
-        } = req.body;
+        const { repoName, manifest, manifestCostEth, walletAddress, newManifestCredits } = req.body;
         
         logSection('📄 FINALIZE BACKUP | PABEIGT BACKUPU');
         logInfo('Repo', repoName);
-        logInfo('Token ID', tokenId);
-        logInfo('Faili | Files', files ? files.length : 0);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest | Missing manifest' });
         if (manifestCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
-        if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
         
         const provider = getProvider();
         const turbo = getTurbo();
@@ -1074,7 +1005,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         await setUserCredits(walletAddress, BigInt(newManifestCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
-        logSection('✅ MANIFESTS AUGŠUPIELĀDĒTS | MANIFEST UPLOADED');
+        logSection('✅ BACKUPS VEIKSMĪGS | BACKUP SUCCESSFUL');
         logInfo('Manifests', 'ar://' + manifestResult.id);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
         
@@ -1169,6 +1100,7 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
     });
     
     if (!response.ok) throw new Error(`GitHub API kļūda | error: ${response.status}`);
+    
     const contents = await response.json();
     if (!Array.isArray(contents)) return files;
     
