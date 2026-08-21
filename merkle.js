@@ -4,15 +4,6 @@
 
 import { ethers } from 'ethers';
 
-const NFT_ABI = [
-    "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
-    "function ownerOf(uint256 tokenId) external view returns (address)",
-    "function getBackupCount(uint256 tokenId) external view returns (uint256)",
-    "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)",
-    "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external"
-];
-
 /**
  * Aprēķina Merkle sakni (filesHash) no failu hešu saraksta.
  * Calculates the Merkle root (filesHash) from a list of file hashes.
@@ -23,7 +14,7 @@ const NFT_ABI = [
  */
 export function calculateMerkleRoot(files) {
     if (!files || !Array.isArray(files) || files.length === 0) {
-        return '0x0000000000000000000000000000000000000000000000000000000000000000';
+        return ethers.ZeroHash;
     }
 
     const fileHashes = files.map(file => 
@@ -41,14 +32,13 @@ export function calculateMerkleRoot(files) {
  * Izsauc NFT līguma addBackup() funkciju ar reālu merkleRoot.
  * Calls the NFT contract's addBackup() function with a real merkleRoot.
  * 
- * @param {Object} params - { tokenId, manifestTxId, manifest, files, deadline, signature, nftContract }.
- * @returns {Promise<Object>} - { txHash, merkleRoot, manifestURI, manifestHash, receipt }.
+ * @param {Object} params - { tokenId, manifestTxId, files, deadline, signature, nftContract }.
+ * @returns {Promise<Object>} - { txHash, merkleRoot, manifestURI, manifestHash }.
  */
 export async function submitBackupWithMerkle(params) {
     const { 
         tokenId, 
         manifestTxId, 
-        manifest,      // Manifesta objekts, ja pieejams
         files, 
         deadline, 
         signature, 
@@ -61,7 +51,6 @@ export async function submitBackupWithMerkle(params) {
     console.log('   Token ID:', tokenId);
     console.log('   Manifest TX ID:', manifestTxId);
     console.log('   Files count:', files ? files.length : 0);
-    console.log('   Manifest provided:', manifest ? '✅ Yes' : '❌ No');
 
     // 1. Aprēķini Merkle sakni.
     //    Calculate Merkle root.
@@ -70,20 +59,11 @@ export async function submitBackupWithMerkle(params) {
 
     // 2. Sagatavo manifest URI un hešu.
     //    Prepare manifest URI and hash.
+    // SVARĪGI: Izmanto URI hash, lai atbilstu kontrakta prasībām
     const manifestURI = `ar://${manifestTxId}`;
-    
-    // Aprēķina manifestHash no manifesta satura, ja tas ir pieejams
-    let manifestHash;
-    if (manifest) {
-        // Ja manifests ir nodots, aprēķina hash no tā satura
-        const manifestString = JSON.stringify(manifest);
-        manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestString));
-        console.log('   Manifest hash (from content):', manifestHash);
-    } else {
-        // Fallback uz URI hash
-        manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
-        console.log('   Manifest hash (from URI):', manifestHash);
-    }
+    const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
+    console.log('   Manifest URI:', manifestURI);
+    console.log('   Manifest hash (from URI):', manifestHash);
 
     // 3. Pārbauda, vai paraksts ir nodots.
     //    Check if signature is provided.
@@ -101,6 +81,12 @@ export async function submitBackupWithMerkle(params) {
     // 5. Izsauc addBackup() ar nodotajiem parametriem.
     //    Call addBackup() with provided parameters.
     console.log('   📤 Calling addBackup()...');
+    console.log('   Parameters:');
+    console.log('   - tokenId:', tokenId);
+    console.log('   - manifestHash:', manifestHash);
+    console.log('   - merkleRoot:', merkleRoot);
+    console.log('   - manifestURI:', manifestURI);
+    console.log('   - deadline:', deadline);
     
     try {
         const tx = await nftContract.addBackup(
@@ -110,7 +96,7 @@ export async function submitBackupWithMerkle(params) {
             manifestURI,
             deadline,
             signature,
-            { gasLimit: 500000 }  // Pievieno gas limitu
+            { gasLimit: 500000 }
         );
         
         console.log('   ✅ Transaction sent:', tx.hash);
@@ -134,6 +120,13 @@ export async function submitBackupWithMerkle(params) {
         
     } catch (error) {
         console.error('   ❌ addBackup error:', error.message);
+        if (error.receipt) {
+            console.error('   Receipt:', {
+                status: error.receipt.status,
+                gasUsed: error.receipt.gasUsed?.toString(),
+                blockNumber: error.receipt.blockNumber
+            });
+        }
         throw error;
     }
 }
