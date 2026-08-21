@@ -1,5 +1,6 @@
-// backup-src.js
-// Priekšpuses loģika backupu un atjaunošanai.
+// ============================================================
+// IMPORTS | IMPORTI
+// ============================================================
 
 const { ethers } = window;
 
@@ -326,10 +327,6 @@ async function executeZipUpload() {
     }
 }
 
-// ============================================================
-// FINALIZE BACKUP | BACKUP PABEIGŠANA
-// ============================================================
-
 async function finalizeBackup() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
@@ -365,6 +362,53 @@ async function finalizeBackup() {
         setStatus('Serveris augšupielādē manifestu...');
         button.textContent = '⏳ Manifests...';
         
+        // EIP-712 parakstīšana
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        
+        const nftContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, signer);
+        const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
+        
+        const deadline = Math.floor(Date.now() / 1000) + 600;
+        const currentNonce = await readContract.getNonce(currentTokenId);
+        const backupNumber = await readContract.getBackupCount(currentTokenId);
+        
+        const manifestURI = `ar://${currentManifestTxId}`;
+        const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
+        
+        // Aprēķina Merkle sakni no currentUploadedFiles
+        const merkleRoot = calculateMerkleRoot(currentUploadedFiles);
+        
+        const domain = {
+            name: 'PermRepo',
+            version: '1',
+            chainId: parseInt(CONFIG.chainId, 16),
+            verifyingContract: CONFIG.nftAddress
+        };
+        
+        const types = {
+            AddBackup: [
+                { name: 'tokenId', type: 'uint256' },
+                { name: 'backupNumber', type: 'uint256' },
+                { name: 'manifestHash', type: 'bytes32' },
+                { name: 'merkleRoot', type: 'bytes32' },
+                { name: 'deadline', type: 'uint256' },
+                { name: 'nonce', type: 'uint256' }
+            ]
+        };
+        
+        const value = {
+            tokenId: BigInt(currentTokenId),
+            backupNumber: backupNumber + 1n,
+            manifestHash,
+            merkleRoot,
+            deadline: BigInt(deadline),
+            nonce: currentNonce
+        };
+        
+        const signature = await signer.signTypedData(domain, types, value);
+        
+        // Nosūta parakstu uz serveri
         const response = await fetch('/api/finalize-backup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -375,96 +419,30 @@ async function finalizeBackup() {
                 walletAddress: userAddress,
                 newManifestCredits: currentNewManifestCredits,
                 tokenId: currentTokenId,
-                files: currentUploadedFiles
+                files: currentUploadedFiles,
+                signature: signature
             })
         });
         
         const result = await response.json();
         
         if (result.success) {
-            // 1. Iegūst manifesta TX ID no servera atbildes
-            const manifestTxId = result.manifestTxId;
+            setStatus('✅ Manifests augšupielādēts! Ierakstam blockchain...');
             
-            // 2. Paraksta addBackup() ar lietotāja MetaMask
-            const provider = new ethers.BrowserProvider(window.ethereum);
-            const signer = await provider.getSigner();
-            
-            const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
-            const deadline = Math.floor(Date.now() / 1000) + 600;
-            const currentNonce = await readContract.getNonce(currentTokenId);
-            const backupNumber = await readContract.getBackupCount(currentTokenId);
-            
-            const manifestURI = `ar://${manifestTxId}`;
-            const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
-            
-            // Merkle sakne – aprēķina no currentUploadedFiles
-            const merkleRoot = calculateMerkleRoot(currentUploadedFiles);
-            
-            const domain = {
-                name: 'PermRepo',
-                version: '1',
-                chainId: parseInt(CONFIG.chainId, 16),
-                verifyingContract: CONFIG.nftAddress
-            };
-            
-            const types = {
-                AddBackup: [
-                    { name: 'tokenId', type: 'uint256' },
-                    { name: 'backupNumber', type: 'uint256' },
-                    { name: 'manifestHash', type: 'bytes32' },
-                    { name: 'merkleRoot', type: 'bytes32' },
-                    { name: 'deadline', type: 'uint256' },
-                    { name: 'nonce', type: 'uint256' }
-                ]
-            };
-            
-            const value = {
-                tokenId: BigInt(currentTokenId),
-                backupNumber: backupNumber + 1n,
-                manifestHash,
-                merkleRoot,
-                deadline: BigInt(deadline),
-                nonce: currentNonce
-            };
-            
-            const signature = await signer.signTypedData(domain, types, value);
-            
-            // 3. Nosūta parakstu uz serveri, lai tas izsauc addBackup()
-            const signatureResponse = await fetch('/api/finalize-backup/sign', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    tokenId: currentTokenId,
-                    manifestTxId: manifestTxId,
-                    files: currentUploadedFiles,
-                    deadline: deadline,
-                    signature: signature
-                })
-            });
-            
-            const signatureResult = await signatureResponse.json();
-            
-            if (signatureResult.success) {
-                setStatus('✅ Manifests augšupielādēts! Ierakstam blockchain...');
-                
-                if (signatureResult.merkleTxHash) {
-                    setStatus('✅ Merkle sakne iesniegta! Transakcija: ' + signatureResult.merkleTxHash);
-                }
-                
-                setStatus('✅ Backups veiksmīgi pabeigts!');
-                button.textContent = '✅ Pabeigts!';
-                
-                document.getElementById('status').innerHTML = 
-                    `✅ Backups veiksmīgs!<br>` +
-                    `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${manifestTxId}" target="_blank">ar://${manifestTxId}</a><br>` +
-                    `Faili ZIP: ${currentUploadedFiles.length}<br>` +
-                    `ZIP izmaksas: ${currentFileCostEth} ETH<br>` +
-                    `Manifesta izmaksas: ${currentManifestCostEth} ETH`;
-            } else {
-                showError(signatureResult.error || 'Kļūda parakstīšanā');
-                button.disabled = false;
-                button.textContent = 'Mēģināt vēlreiz';
+            if (result.merkleTxHash) {
+                setStatus('✅ Merkle sakne iesniegta! Transakcija: ' + result.merkleTxHash);
             }
+            
+            setStatus('✅ Backups veiksmīgi pabeigts!');
+            button.textContent = '✅ Pabeigts!';
+            
+            document.getElementById('status').innerHTML = 
+                `✅ Backups veiksmīgs!<br>` +
+                `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${result.manifestTxId}" target="_blank">ar://${result.manifestTxId}</a><br>` +
+                `Faili ZIP: ${currentUploadedFiles.length}<br>` +
+                `ZIP izmaksas: ${currentFileCostEth} ETH<br>` +
+                `Manifesta izmaksas: ${currentManifestCostEth} ETH`;
+            
         } else {
             showError(result.error || 'Kļūda');
             button.disabled = false;
