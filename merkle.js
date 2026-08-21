@@ -41,7 +41,7 @@ export function calculateMerkleRoot(files) {
  * Izsauc NFT līguma addBackup() funkciju ar reālu merkleRoot.
  * Calls the NFT contract's addBackup() function with a real merkleRoot.
  * 
- * @param {Object} params - { tokenId, manifestTxId, files, deadline, signature, nftContract, readContract }.
+ * @param {Object} params - { tokenId, manifestTxId, files, deadline, signature, nonce, backupNumber, nftContract, readContract }.
  * @returns {Promise<string>} - transakcijas hash / transaction hash.
  */
 export async function submitBackupWithMerkle(params) {
@@ -51,6 +51,8 @@ export async function submitBackupWithMerkle(params) {
         files, 
         deadline, 
         signature, 
+        nonce, 
+        backupNumber, 
         nftContract, 
         readContract 
     } = params;
@@ -64,19 +66,14 @@ export async function submitBackupWithMerkle(params) {
     const manifestURI = `ar://${manifestTxId}`;
     const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
 
-    // 3. Iegūst pašreizējo nonce un backupNumber.
-    //    Get current nonce and backupNumber.
-    const currentNonce = await readContract.getNonce(tokenId);
-    const backupNumber = await readContract.getBackupCount(tokenId);
-
-    // 4. Pārbauda, vai paraksts ir nodots (no priekšpuses).
+    // 3. Pārbauda, vai paraksts ir nodots (no priekšpuses).
     //    Check if signature is provided (from frontend).
     if (!signature || signature === '0x') {
         throw new Error('Nav paraksta (signature) | No signature provided');
     }
 
-    // 5. Izsauc addBackup().
-    //    Call addBackup().
+    // 4. Izsauc addBackup() ar nodotajiem parametriem.
+    //    Call addBackup() with provided parameters.
     const tx = await nftContract.addBackup(
         tokenId,
         manifestHash,
