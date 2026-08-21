@@ -53,11 +53,9 @@ const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 // ============================================================
-// VESELĪBAS PĀRBAUŽU SLĒDZIS | HEALTH CHECKS TOGGLE
+// HEALTH CHECKS TOGGLE | VESELĪBAS PĀRBAUŽU SLĒDZIS
 // ============================================================
 
-// Galvenais slēdzis visām veselības pārbaudēm.
-// Main toggle for all health checks.
 const HEALTH_CHECKS_ENABLED = process.env.HEALTH_CHECKS_ENABLED === 'true';
 
 // ============================================================
@@ -600,6 +598,29 @@ app.post('/api/prepare-backup', async (req, res) => {
             }
         }
         
+        // ============================================================
+        // ATJAUNINA VISUS IEPRIEKŠĒJOS FAILUS | GET ALL PREVIOUS FILES
+        // ============================================================
+        
+        let allPreviousFiles = { ...previousPaths };
+        
+        for (const historyEntry of previousHistory || []) {
+            const prevManifestId = historyEntry.manifestId;
+            if (prevManifestId) {
+                try {
+                    const response = await fetch(`${ARWEAVE_GATEWAY}/raw/${prevManifestId}`);
+                    if (response.ok) {
+                        const manifest = await response.json();
+                        if (manifest.paths) {
+                            allPreviousFiles = { ...allPreviousFiles, ...manifest.paths };
+                        }
+                    }
+                } catch (e) {
+                    // Ignorē kļūdu | Ignore error
+                }
+            }
+        }
+        
         logSection('🌐 GITHUB FAILI | GITHUB FILES');
         const repoParts = repoName.split('/');
         const startTime = Date.now();
@@ -617,7 +638,7 @@ app.post('/api/prepare-backup', async (req, res) => {
         const unchangedFiles = {};
         
         for (const file of currentFiles) {
-            const previousFile = previousPaths[file.path];
+            const previousFile = allPreviousFiles[file.path];
             if (previousFile && previousFile.zipId && previousFile.hash && 
                 previousFile.hash === file.hash && 
                 previousFile.size === file.size) {
@@ -764,34 +785,6 @@ app.post('/api/execute-backup', async (req, res) => {
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry | Repo not registered in Registry' });
         
         const turbo = getTurbo();
-        
-        // ============================================================
-        // VESELĪBAS PĀRBAUDES (JA IESLĒGTAS) | HEALTH CHECKS (IF ENABLED)
-        // ============================================================
-        
-        if (HEALTH_CHECKS_ENABLED) {
-            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
-            
-            const healthParams = {
-                redis,
-                rpcUrl: RPC_URL,
-                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
-                treasuryAddress: TREASURY_ADDRESS,
-                nftAddress: NFT_ADDRESS,
-                subscriptionAddress: SUBSCRIPTION_ADDRESS,
-                registryAddress: REGISTRY_ADDRESS
-            };
-            
-            const health = await checkAllServices(healthParams);
-            
-            if (!health.allHealthy) {
-                logWarning('⚠️ Daži servisi nav pieejami, bet turpinām darbu');
-            } else {
-                logSuccess('✅ Visi servisi ir pieejami');
-            }
-        } else {
-            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
-        }
         
         // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
