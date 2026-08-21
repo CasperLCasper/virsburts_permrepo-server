@@ -53,6 +53,14 @@ const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 // ============================================================
+// VESELĪBAS PĀRBAUŽU SLĒDZIS | HEALTH CHECKS TOGGLE
+// ============================================================
+
+// Galvenais slēdzis visām veselības pārbaudēm.
+// Main toggle for all health checks.
+const HEALTH_CHECKS_ENABLED = process.env.HEALTH_CHECKS_ENABLED === 'true';
+
+// ============================================================
 // REDIS | REDIS
 // ============================================================
 
@@ -756,6 +764,34 @@ app.post('/api/execute-backup', async (req, res) => {
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry | Repo not registered in Registry' });
         
         const turbo = getTurbo();
+        
+        // ============================================================
+        // VESELĪBAS PĀRBAUDES (JA IESLĒGTAS) | HEALTH CHECKS (IF ENABLED)
+        // ============================================================
+        
+        if (HEALTH_CHECKS_ENABLED) {
+            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
+            
+            const healthParams = {
+                redis,
+                rpcUrl: RPC_URL,
+                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
+                treasuryAddress: TREASURY_ADDRESS,
+                nftAddress: NFT_ADDRESS,
+                subscriptionAddress: SUBSCRIPTION_ADDRESS,
+                registryAddress: REGISTRY_ADDRESS
+            };
+            
+            const health = await checkAllServices(healthParams);
+            
+            if (!health.allHealthy) {
+                logWarning('⚠️ Daži servisi nav pieejami, bet turpinām darbu');
+            } else {
+                logSuccess('✅ Visi servisi ir pieejami');
+            }
+        } else {
+            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
+        }
         
         // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
