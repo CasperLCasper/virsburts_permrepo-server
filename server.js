@@ -598,29 +598,6 @@ app.post('/api/prepare-backup', async (req, res) => {
             }
         }
         
-        // ============================================================
-        // ATJAUNINA VISUS IEPRIEKŠĒJOS FAILUS | GET ALL PREVIOUS FILES
-        // ============================================================
-        
-        let allPreviousFiles = { ...previousPaths };
-        
-        for (const historyEntry of previousHistory || []) {
-            const prevManifestId = historyEntry.manifestId;
-            if (prevManifestId) {
-                try {
-                    const response = await fetch(`${ARWEAVE_GATEWAY}/raw/${prevManifestId}`);
-                    if (response.ok) {
-                        const manifest = await response.json();
-                        if (manifest.paths) {
-                            allPreviousFiles = { ...allPreviousFiles, ...manifest.paths };
-                        }
-                    }
-                } catch (e) {
-                    // Ignorē kļūdu | Ignore error
-                }
-            }
-        }
-        
         logSection('🌐 GITHUB FAILI | GITHUB FILES');
         const repoParts = repoName.split('/');
         const startTime = Date.now();
@@ -638,10 +615,8 @@ app.post('/api/prepare-backup', async (req, res) => {
         const unchangedFiles = {};
         
         for (const file of currentFiles) {
-            const previousFile = allPreviousFiles[file.path];
-            if (previousFile && previousFile.zipId && previousFile.hash && 
-                previousFile.hash === file.hash && 
-                previousFile.size === file.size) {
+            const previousFile = previousPaths[file.path];
+            if (previousFile && previousFile.zipId && previousFile.hash && previousFile.hash === file.hash) {
                 unchangedFiles[file.path] = { zipId: previousFile.zipId, size: file.size, hash: file.hash };
             } else {
                 changedFiles.push(file);
@@ -787,9 +762,37 @@ app.post('/api/execute-backup', async (req, res) => {
         const turbo = getTurbo();
         
         // ============================================================
+        // VESELĪBAS PĀRBAUDES (JA IESLĒGTAS) | HEALTH CHECKS (IF ENABLED)
+        // ============================================================
+        
+        if (HEALTH_CHECKS_ENABLED) {
+            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
+            
+            const healthParams = {
+                redis,
+                rpcUrl: RPC_URL,
+                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
+                treasuryAddress: TREASURY_ADDRESS,
+                nftAddress: NFT_ADDRESS,
+                subscriptionAddress: SUBSCRIPTION_ADDRESS,
+                registryAddress: REGISTRY_ADDRESS
+            };
+            
+            const health = await checkAllServices(healthParams);
+            
+            if (!health.allHealthy) {
+                logWarning('⚠️ Daži servisi nav pieejami, bet turpinām darbu');
+            } else {
+                logSuccess('✅ Visi servisi ir pieejami');
+            }
+        } else {
+            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
+        }
+        
+        // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
         // ============================================================
-
+        
         logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
         const zip = new JSZip();
         
@@ -805,7 +808,7 @@ app.post('/api/execute-backup', async (req, res) => {
         // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
         // ============================================================
-
+        
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
@@ -834,7 +837,7 @@ app.post('/api/execute-backup', async (req, res) => {
         // ============================================================
         // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
         // ============================================================
-
+        
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
@@ -857,7 +860,7 @@ app.post('/api/execute-backup', async (req, res) => {
         // ============================================================
         // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
         // ============================================================
-
+        
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
@@ -865,7 +868,7 @@ app.post('/api/execute-backup', async (req, res) => {
         // ============================================================
         // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
         // ============================================================
-
+        
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
