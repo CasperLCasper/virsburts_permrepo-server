@@ -610,7 +610,9 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         for (const file of currentFiles) {
             const previousFile = previousPaths[file.path];
-            if (previousFile && previousFile.zipId && previousFile.hash && previousFile.hash === file.hash) {
+            if (previousFile && previousFile.zipId && previousFile.hash && 
+                previousFile.hash === file.hash && 
+                previousFile.size === file.size) {
                 unchangedFiles[file.path] = { zipId: previousFile.zipId, size: file.size, hash: file.hash };
             } else {
                 changedFiles.push(file);
