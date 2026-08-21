@@ -36,10 +36,6 @@ const TREASURY_ABI = [
 // INITIALIZATION | INICIALIZĀCIJA
 // ============================================================
 
-/**
- * Inicializē lietotāja sesiju un ielādē konfigurāciju.
- * Initializes user session and loads configuration.
- */
 async function init() {
     try {
         const configResponse = await fetch('/api/config');
@@ -59,10 +55,6 @@ async function init() {
     }
 }
 
-/**
- * Rāda autentifikācijas sadaļu.
- * Shows authentication section.
- */
 function showAuthSection() {
     document.getElementById('authSection').style.display = 'block';
     document.getElementById('loginButton').onclick = () => {
@@ -70,10 +62,6 @@ function showAuthSection() {
     };
 }
 
-/**
- * Rāda lietotāja sadaļu.
- * Shows user section.
- */
 function showUserSection(userData) {
     document.getElementById('authSection').style.display = 'none';
     document.getElementById('userSection').style.display = 'block';
@@ -84,10 +72,6 @@ function showUserSection(userData) {
     };
 }
 
-/**
- * Ielādē lietotāja GitHub repozitorijus.
- * Loads user's GitHub repositories.
- */
 async function loadRepos() {
     const response = await fetch('/api/github/repos');
     const data = await response.json();
@@ -123,14 +107,6 @@ async function loadRepos() {
     }
 }
 
-// ============================================================
-// WALLET CONNECTION | MAKA SAVIENOŠANA
-// ============================================================
-
-/**
- * Savieno lietotāja MetaMask maku un pārslēdz ķēdi.
- * Connects user's MetaMask wallet and switches chain.
- */
 async function connectWallet() {
     if (!window.ethereum) {
         showError('Lūdzu instalē MetaMask!');
@@ -159,14 +135,6 @@ async function connectWallet() {
     }
 }
 
-// ============================================================
-// REPO STATUS | REPO STATUSS
-// ============================================================
-
-/**
- * Pārbauda repozitorija statusu (NFT, abonements, reģistrācija).
- * Checks repository status (NFT, subscription, registration).
- */
 async function checkRepoStatus(repoName) {
     currentRepo = repoName;
     hasDepositedFiles = false;
@@ -225,14 +193,6 @@ async function checkRepoStatus(repoName) {
     }
 }
 
-// ============================================================
-// BACKUP PREPARATION | BACKUP SAGATAVOŠANA
-// ============================================================
-
-/**
- * Sagatavo backupu – aprēķina izmaiņas un izmaksas.
- * Prepares backup – calculates changes and costs.
- */
 async function prepareBackup() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
@@ -278,14 +238,6 @@ async function prepareBackup() {
     }
 }
 
-// ============================================================
-// ZIP UPLOAD EXECUTION | ZIP AUGŠUPIELĀDES IZPILDE
-// ============================================================
-
-/**
- * Izpilda ZIP arhīva augšupielādi.
- * Executes ZIP archive upload.
- */
 async function executeZipUpload() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
@@ -378,10 +330,6 @@ async function executeZipUpload() {
 // FINALIZE BACKUP | BACKUP PABEIGŠANA
 // ============================================================
 
-/**
- * Pabeidz backupu – augšupielādē manifestu un iesniedz Merkle sakni.
- * Finalizes backup – uploads manifest and submits Merkle root.
- */
 async function finalizeBackup() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
@@ -417,6 +365,60 @@ async function finalizeBackup() {
         setStatus('Serveris augšupielādē manifestu...');
         button.textContent = '⏳ Manifests...';
         
+        // ============================================================
+        // EIP-712 PARAKSTĪŠANA | EIP-712 SIGNING
+        // ============================================================
+        
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        
+        const nftContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, signer);
+        const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
+        
+        const deadline = Math.floor(Date.now() / 1000) + 600;
+        const currentNonce = await readContract.getNonce(currentTokenId);
+        const backupNumber = await readContract.getBackupCount(currentTokenId);
+        
+        // MANIFEST URI (no currentManifest vai servera atbildes)
+        const manifestURI = `ar://${currentManifestTxId}`;
+        const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
+        
+        // Merkle sakne – aprēķina no currentUploadedFiles
+        const merkleRoot = calculateMerkleRoot(currentUploadedFiles);
+        
+        const domain = {
+            name: 'PermRepo',
+            version: '1',
+            chainId: parseInt(CONFIG.chainId, 16),
+            verifyingContract: CONFIG.nftAddress
+        };
+        
+        const types = {
+            AddBackup: [
+                { name: 'tokenId', type: 'uint256' },
+                { name: 'backupNumber', type: 'uint256' },
+                { name: 'manifestHash', type: 'bytes32' },
+                { name: 'merkleRoot', type: 'bytes32' },
+                { name: 'deadline', type: 'uint256' },
+                { name: 'nonce', type: 'uint256' }
+            ]
+        };
+        
+        const value = {
+            tokenId: BigInt(currentTokenId),
+            backupNumber: backupNumber + 1n,
+            manifestHash,
+            merkleRoot,
+            deadline: BigInt(deadline),
+            nonce: currentNonce
+        };
+        
+        const signature = await signer.signTypedData(domain, types, value);
+        
+        // ============================================================
+        // FERCH UZ SERVERI | FETCH TO SERVER
+        // ============================================================
+        
         const response = await fetch('/api/finalize-backup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -426,8 +428,9 @@ async function finalizeBackup() {
                 manifestCostEth: currentManifestCostEth,
                 walletAddress: userAddress,
                 newManifestCredits: currentNewManifestCredits,
-                tokenId: currentTokenId,          // <-- PIEVIENO ŠO
-                files: currentUploadedFiles       // <-- PIEVIENO ŠO
+                tokenId: currentTokenId,
+                files: currentUploadedFiles,
+                signature: signature // PIEVIENO PARAKSTU
             })
         });
         
@@ -436,7 +439,6 @@ async function finalizeBackup() {
         if (result.success) {
             setStatus('✅ Manifests augšupielādēts! Ierakstam blockchain...');
             
-            // Merkle sakne un NFT ieraksts notiek serverī
             if (result.merkleTxHash) {
                 setStatus('✅ Merkle sakne iesniegta! Transakcija: ' + result.merkleTxHash);
             }
@@ -468,24 +470,33 @@ async function finalizeBackup() {
     }
 }
 
-// ============================================================
-// UTILITY FUNCTIONS | PALĪGFUNKCIJAS
-// ============================================================
-
-/**
- * Iestata statusa ziņojumu.
- * Sets status message.
- */
 function setStatus(msg) { 
     document.getElementById('status').innerHTML = msg; 
 }
 
-/**
- * Rāda kļūdas ziņojumu.
- * Shows error message.
- */
 function showError(msg) { 
     document.getElementById('error').textContent = msg; 
+}
+
+// ============================================================
+// MERKLE SAKNES APRĒĶINS | MERKLE ROOT CALCULATION
+// ============================================================
+
+function calculateMerkleRoot(files) {
+    // Vienkārša Merkle saknes aprēķināšana (piemēram, keccak256 no visiem failu hešiem)
+    const fileHashes = files.map(file => 
+        ethers.keccak256(ethers.toUtf8Bytes(file.hash || ''))
+    );
+    
+    if (fileHashes.length === 0) {
+        return '0x0000000000000000000000000000000000000000000000000000000000000000';
+    }
+    
+    const combinedHash = ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(['bytes32[]'], [fileHashes])
+    );
+    
+    return combinedHash;
 }
 
 // ============================================================
