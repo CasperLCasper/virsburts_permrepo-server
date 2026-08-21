@@ -781,10 +781,15 @@ app.post('/api/execute-backup', async (req, res) => {
             const health = await checkAllServices(healthParams);
             
             if (!health.allHealthy) {
-                logWarning('⚠️ Daži servisi nav pieejami, bet turpinām darbu');
-            } else {
-                logSuccess('✅ Visi servisi ir pieejami');
+                logError('❌ Servisi nav pieejami! Process tiek BLOĶĒTS!');
+                return res.status(503).json({
+                    success: false,
+                    error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
+                    health
+                });
             }
+            
+            logSuccess('✅ Visi servisi ir pieejami!');
         } else {
             logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
         }
