@@ -959,8 +959,7 @@ app.post('/api/finalize-backup', async (req, res) => {
             walletAddress, 
             newManifestCredits,
             tokenId,
-            files,
-            signature
+            files
         } = req.body;
         
         logSection('📄 FINALIZE BACKUP | PABEIGT BACKUPU');
@@ -974,7 +973,6 @@ app.post('/api/finalize-backup', async (req, res) => {
         if (manifestCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
-        if (!signature) return res.status(400).json({ success: false, error: 'Nav signature | Missing signature' });
         
         const provider = getProvider();
         const turbo = getTurbo();
@@ -1040,10 +1038,10 @@ app.post('/api/finalize-backup', async (req, res) => {
             manifestTxId: manifestResult.id,
             files: files || [],
             deadline: Math.floor(Date.now() / 1000) + 600,
-            signature: signature,
+            signature: null,
             nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
             readContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider),
-            signerContract: null // NAV VAJADZĪGS
+            signerContract: null
         });
         
         logSuccess('Merkle sakne iesniegta! | Merkle root submitted!');
@@ -1064,6 +1062,42 @@ app.post('/api/finalize-backup', async (req, res) => {
         logSection('❌ FINALIZE BACKUP ERROR');
         logError(errorMessage(error));
         console.error(error);
+        return res.status(500).json({ success: false, error: errorMessage(error) });
+    }
+});
+
+// ============================================================
+// FINALIZE BACKUP SIGN | PARAKSTĪT BACKUPU
+// ============================================================
+
+app.post('/api/finalize-backup/sign', async (req, res) => {
+    try {
+        const { tokenId, manifestTxId, files, deadline, signature } = req.body;
+        
+        if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
+        if (!manifestTxId) return res.status(400).json({ success: false, error: 'Nav manifestTxId | Missing manifestTxId' });
+        if (!signature) return res.status(400).json({ success: false, error: 'Nav signature | Missing signature' });
+        
+        const provider = getProvider();
+        const nftContract = new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider);
+        
+        const merkleTxHash = await submitBackupWithMerkle({
+            tokenId: tokenId,
+            manifestTxId: manifestTxId,
+            files: files || [],
+            deadline: deadline,
+            signature: signature,
+            nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
+            readContract: nftContract
+        });
+        
+        logSuccess('Merkle sakne iesniegta! | Merkle root submitted!');
+        logInfo('Transakcija | Transaction', merkleTxHash);
+        
+        return res.json({ success: true, merkleTxHash });
+        
+    } catch (error) {
+        logError('Sign kļūda | Sign error: ' + errorMessage(error));
         return res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
