@@ -1031,31 +1031,14 @@ app.post('/api/finalize-backup', async (req, res) => {
         await setUserCredits(walletAddress, BigInt(newManifestCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
-        // 4. IESNIEDZ MERKLE SAKNI NFT LĪGUMĀ | SUBMIT MERKLE ROOT TO NFT CONTRACT
-        logSection('🔐 MERKLE SAKNES IESNIEGŠANA | MERKLE ROOT SUBMISSION');
-        const merkleTxHash = await submitBackupWithMerkle({
-            tokenId: tokenId,
-            manifestTxId: manifestResult.id,
-            files: files || [],
-            deadline: Math.floor(Date.now() / 1000) + 600,
-            signature: null,
-            nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
-            readContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider),
-            signerContract: null
-        });
-        
-        logSuccess('Merkle sakne iesniegta! | Merkle root submitted!');
-        logInfo('Transakcija | Transaction', merkleTxHash);
-        
-        logSection('✅ BACKUPS VEIKSMĪGS | BACKUP SUCCESSFUL');
+        logSection('✅ MANIFESTS AUGŠUPIELĀDĒTS | MANIFEST UPLOADED');
         logInfo('Manifests', 'ar://' + manifestResult.id);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
         
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
-            manifestCostEth,
-            merkleTxHash
+            manifestCostEth
         });
         
     } catch (error) {
