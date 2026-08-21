@@ -391,16 +391,27 @@ async function finalizeBackup() {
             const signer = await provider.getSigner();
             
             const readContract = new ethers.Contract(CONFIG.nftAddress, NFT_ABI, provider);
+            
+            // SVARĪGI: Iegūst pašreizējās vērtības no kontrakta
             const deadline = Math.floor(Date.now() / 1000) + 600;
             const currentNonce = await readContract.getNonce(currentTokenId);
-            const backupNumber = await readContract.getBackupCount(currentTokenId);
+            const currentBackupCount = await readContract.getBackupCount(currentTokenId);
             
+            // Aprēķina vērtības, ko kontrakts sagaida
             const manifestURI = `ar://${manifestTxId}`;
             const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
-            
-            // Merkle sakne – aprēķina no currentUploadedFiles
             const merkleRoot = calculateMerkleRoot(currentUploadedFiles);
+            const expectedBackupNumber = currentBackupCount + 1n;
             
+            console.log('📝 PARAKSTA DATI | SIGNING DATA');
+            console.log('   Token ID:', currentTokenId);
+            console.log('   Backup Number (expected):', expectedBackupNumber.toString());
+            console.log('   Manifest Hash:', manifestHash);
+            console.log('   Merkle Root:', merkleRoot);
+            console.log('   Deadline:', deadline);
+            console.log('   Nonce:', currentNonce.toString());
+            
+            // EIP-712 Domain
             const domain = {
                 name: 'PermRepo',
                 version: '1',
@@ -408,6 +419,7 @@ async function finalizeBackup() {
                 verifyingContract: CONFIG.nftAddress
             };
             
+            // EIP-712 Types - jāatbilst kontrakta ADD_BACKUP_TYPEHASH
             const types = {
                 AddBackup: [
                     { name: 'tokenId', type: 'uint256' },
@@ -419,16 +431,19 @@ async function finalizeBackup() {
                 ]
             };
             
+            // EIP-712 Value - izmanto tieši tās vērtības, ko kontrakts sagaida
             const value = {
                 tokenId: BigInt(currentTokenId),
-                backupNumber: backupNumber + 1n,
-                manifestHash,
-                merkleRoot,
+                backupNumber: expectedBackupNumber,  // backupCount + 1
+                manifestHash: manifestHash,
+                merkleRoot: merkleRoot,
                 deadline: BigInt(deadline),
-                nonce: currentNonce
+                nonce: currentNonce  // pašreizējais nonce
             };
             
             const signature = await signer.signTypedData(domain, types, value);
+            
+            console.log('   Signature:', signature.substring(0, 30) + '...');
             
             // 3. Nosūta parakstu uz serveri, lai tas izsauc addBackup()
             const signatureResponse = await fetch('/api/finalize-backup/sign', {
@@ -437,7 +452,6 @@ async function finalizeBackup() {
                 body: JSON.stringify({
                     tokenId: currentTokenId,
                     manifestTxId: manifestTxId,
-                    manifest: currentManifest,  // PIEVIENO manifestu
                     files: currentUploadedFiles,
                     deadline: deadline,
                     signature: signature
@@ -497,7 +511,7 @@ function calculateMerkleRoot(files) {
     );
     
     if (fileHashes.length === 0) {
-        return '0x0000000000000000000000000000000000000000000000000000000000000000';
+        return ethers.ZeroHash;
     }
     
     const combinedHash = ethers.keccak256(
