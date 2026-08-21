@@ -432,6 +432,7 @@ async function finalizeBackup() {
                 body: JSON.stringify({
                     tokenId: currentTokenId,
                     manifestTxId: manifestTxId,
+                    manifest: currentManifest,  // PIEVIENO manifestu
                     files: currentUploadedFiles,
                     deadline: deadline,
                     signature: signature
@@ -441,21 +442,16 @@ async function finalizeBackup() {
             const signatureResult = await signatureResponse.json();
             
             if (signatureResult.success) {
-                setStatus('✅ Manifests augšupielādēts! Ierakstam blockchain...');
-                
-                if (signatureResult.merkleTxHash) {
-                    setStatus('✅ Merkle sakne iesniegta! Transakcija: ' + signatureResult.merkleTxHash);
-                }
-                
-                setStatus('✅ Backups veiksmīgi pabeigts!');
-                button.textContent = '✅ Pabeigts!';
+                setStatus('✅ Backups ierakstīts blokķēdē!');
                 
                 document.getElementById('status').innerHTML = 
                     `✅ Backups veiksmīgs!<br>` +
                     `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${manifestTxId}" target="_blank">ar://${manifestTxId}</a><br>` +
+                    `Blockchain TX: <a href="https://sepolia.basescan.org/tx/${signatureResult.addBackupTxHash}" target="_blank">${signatureResult.addBackupTxHash.substring(0, 20)}...</a><br>` +
                     `Faili ZIP: ${currentUploadedFiles.length}<br>` +
                     `ZIP izmaksas: ${currentFileCostEth} ETH<br>` +
                     `Manifesta izmaksas: ${currentManifestCostEth} ETH`;
+                    
             } else {
                 showError(signatureResult.error || 'Kļūda parakstīšanā');
                 button.disabled = false;
