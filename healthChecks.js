@@ -1,92 +1,81 @@
 // healthChecks.js
-// Visas servisu pārbaudes ar SSL ignorēšanu (testnet videi)
-// All service checks with SSL bypass (for testnet environment)
+// Visas ārējo servisu, blokķēdes un servera funkcionālās pārbaudes.
+// All external service, blockchain, and server functional checks.
 
-import { request } from 'https';
 import { ethers } from 'ethers';
+import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 
 // ============================================================
 // KONSTANTES | CONSTANTS
 // ============================================================
 
+const KNOWN_ARWEAVE_TX = 'bVLEkL1SOPFCzIYi8T_QNnh17VIDp4RylU6YTwCMVRw';
 const ARWEAVE_GATEWAY_URL = 'https://ar-io.dev';
 const BASE_RPC_URL = 'https://base-sepolia-rpc.publicnode.com';
 const TURBO_PAYMENT_URL = 'https://payment.services.ar-io.dev';
 const TURBO_UPLOAD_URL = 'https://upload.services.ar-io.dev';
 
 // ============================================================
-// SSL IGNORĒŠANAS FUNKCIJA | SSL BYPASS FUNCTION
-// ============================================================
-
-/**
- * Veic HTTP pieprasījumu, ignorējot SSL sertifikāta kļūdas.
- * Performs an HTTP request, ignoring SSL certificate errors.
- * 
- * @param {string} url - URL adrese.
- * @returns {Promise<Object>} - Atbilde ar statusCode.
- */
-function fetchWithNoSSL(url) {
-    return new Promise((resolve, reject) => {
-        const req = request(url, { rejectUnauthorized: false }, (res) => {
-            resolve(res);
-        });
-        req.on('error', (err) => reject(err));
-        req.end();
-    });
-}
-
-// ============================================================
 // ĀRĒJO SERVISU PĀRBAUDES | EXTERNAL SERVICE CHECKS
 // ============================================================
 
 /**
- * Arweave vārtejas pārbaude (ar-io.dev).
- * Checks Arweave gateway (ar-io.dev).
+ * Arweave vārtejas funkcionālā pārbaude (False Positive droša).
+ * Mēģina iegūt zināmu transakciju, izmantojot HEAD pieprasījumu.
  */
 export async function checkArweaveGateway() {
     try {
-        const response = await fetchWithNoSSL(`${ARWEAVE_GATEWAY_URL}/ar-io/healthcheck`);
-        return response.statusCode === 200;
+        const response = await fetch(`${ARWEAVE_GATEWAY_URL}/raw/${KNOWN_ARWEAVE_TX}`, {
+            method: 'HEAD',
+            timeout: 5000
+        });
+        return response.ok;
     } catch {
         return false;
     }
 }
 
 /**
- * Base RPC pārbaude (base-sepolia-rpc.publicnode.com).
- * Checks Base RPC (base-sepolia-rpc.publicnode.com).
+ * Base RPC funkcionālā pārbaude (False Positive droša).
+ * Simulē nulles vērtības transakciju, izmantojot estimateGas.
  */
 export async function checkBaseRPC() {
     try {
         const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
-        const block = await provider.getBlock('latest');
-        return !!block;
+        const zeroWallet = new ethers.Wallet(ethers.ZeroAddress, provider);
+        await provider.estimateGas({
+            to: zeroWallet.address,
+            value: 0n
+        });
+        return true;
     } catch {
         return false;
     }
 }
 
 /**
- * Turbo Payment API pārbaude (payment.services.ar-io.dev).
- * Checks Turbo Payment API (payment.services.ar-io.dev).
+ * Turbo Payment API veselības pārbaude.
+ * Pārbauda, vai /v1/info atbild un satur derīgas adreses.
  */
 export async function checkTurboPayment() {
     try {
-        const response = await fetchWithNoSSL(`${TURBO_PAYMENT_URL}/v1/info`);
-        return response.statusCode === 200;
+        const response = await fetch(`${TURBO_PAYMENT_URL}/v1/info`);
+        if (!response.ok) return false;
+        const data = await response.json();
+        return !!data.addresses && Object.keys(data.addresses).length > 0;
     } catch {
         return false;
     }
 }
 
 /**
- * Turbo Upload API pārbaude (upload.services.ar-io.dev).
- * Checks Turbo Upload API (upload.services.ar-io.dev).
+ * Turbo Upload API veselības pārbaude.
+ * Pārbauda, vai /v1/info atgriež 200 OK.
  */
 export async function checkTurboUpload() {
     try {
-        const response = await fetchWithNoSSL(`${TURBO_UPLOAD_URL}/v1/info`);
-        return response.statusCode === 200;
+        const response = await fetch(`${TURBO_UPLOAD_URL}/v1/info`);
+        return response.ok;
     } catch {
         return false;
     }
@@ -97,11 +86,10 @@ export async function checkTurboUpload() {
 // ============================================================
 
 /**
- * Servera iekšējā pārbaude – pārbauda Redis, vides mainīgos, operatora maku un Turbo SDK.
- * Server internal check – checks Redis, environment variables, operator wallet, and Turbo SDK.
+ * Servera iekšējā funkcionālā pārbaude.
+ * Pārbauda Redis, vides mainīgos, operatora maku un Turbo SDK.
  * 
  * @param {Object} params - { redis, rpcUrl, operatorPrivateKey, treasuryAddress, nftAddress }
- * @returns {Object} - { redis, envVars, operatorWallet, turboSDK }
  */
 export async function checkServerInternals(params) {
     const {
@@ -109,7 +97,9 @@ export async function checkServerInternals(params) {
         rpcUrl,
         operatorPrivateKey,
         treasuryAddress,
-        nftAddress
+        nftAddress,
+        subscriptionAddress,
+        registryAddress
     } = params;
 
     const results = {
@@ -128,11 +118,11 @@ export async function checkServerInternals(params) {
             await redis.del('test:health');
         }
     } catch {
-        // Redis nav pieejams
+        // Redis nav pieejams vai nedarbojas
     }
 
     // 2. Vides mainīgie
-    results.envVars = !!(rpcUrl && operatorPrivateKey && treasuryAddress && nftAddress);
+    results.envVars = !!(rpcUrl && operatorPrivateKey && treasuryAddress && nftAddress && subscriptionAddress && registryAddress);
 
     // 3. Operatora maks
     try {
@@ -167,9 +157,7 @@ export async function checkServerInternals(params) {
 
 /**
  * Veic visas ārējās un iekšējās pārbaudes.
- * Performs all external and internal checks.
- * 
- * @param {Object} serverParams - { redis, rpcUrl, operatorPrivateKey, treasuryAddress, nftAddress }
+ * @param {Object} serverParams - { redis, rpcUrl, operatorPrivateKey, treasuryAddress, nftAddress, subscriptionAddress, registryAddress }
  * @returns {Object} - { arweave, baseRPC, turboPayment, turboUpload, server, allHealthy }
  */
 export async function checkAllServices(serverParams) {
