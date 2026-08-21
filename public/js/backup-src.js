@@ -223,10 +223,15 @@ async function prepareBackup() {
             return;
         }
         
-        document.getElementById('status').innerHTML = 
-            `📦 Faili: ${result.files.length}<br>` +
-            `💰 Failu izmaksas: ${result.fileCostEth} ETH<br>` +
-            `📄 Manifests: tiks aprēķināts pēc ZIP augšupielādes`;
+        // Parāda izmaiņu statistiku
+        let statsHtml = `📦 Faili: ${result.files.length}<br>`;
+        if (result.stats) {
+            statsHtml += `📊 Izmaiņas: ${result.stats.newFiles} jauni, ${result.stats.modifiedFiles} mainīti<br>`;
+        }
+        statsHtml += `💰 Failu izmaksas: ${result.fileCostEth} ETH<br>`;
+        statsHtml += `📄 Manifests: tiks aprēķināts pēc ZIP augšupielādes`;
+        
+        document.getElementById('status').innerHTML = statsHtml;
         
         button.disabled = false;
         button.textContent = 'Iemaksāt par ZIP un augšupielādēt';
