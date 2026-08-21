@@ -607,20 +607,56 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         const changedFiles = [];
         const unchangedFiles = {};
+        let unchangedCount = 0;
+        let newFiles = 0;
+        let modifiedFiles = 0;
+        let deletedFiles = 0;
         
+        // IZLABOTA SALĪDZINĀŠANAS LOĢIKA
         for (const file of currentFiles) {
             const previousFile = previousPaths[file.path];
-            if (previousFile && previousFile.zipId && previousFile.hash && previousFile.hash === file.hash) {
-                unchangedFiles[file.path] = { zipId: previousFile.zipId, size: file.size, hash: file.hash };
+            
+            if (previousFile) {
+                // Fails eksistēja iepriekš
+                if (previousFile.hash && previousFile.hash === file.hash) {
+                    // Hash sakrīt - fails nav mainījies
+                    unchangedFiles[file.path] = { 
+                        zipId: previousFile.zipId, 
+                        size: file.size, 
+                        hash: file.hash 
+                    };
+                    unchangedCount++;
+                } else {
+                    // Hash atšķiras - fails ir mainījies
+                    changedFiles.push(file);
+                    modifiedFiles++;
+                    logInfo(`Mainīts | Modified: ${file.path}`, 
+                        `Vecais hash: ${previousFile.hash || 'nav'}, Jaunais hash: ${file.hash}`);
+                }
             } else {
+                // Jauns fails
                 changedFiles.push(file);
+                newFiles++;
+                logInfo(`Jauns | New: ${file.path}`, `hash: ${file.hash}`);
             }
         }
         
-        logInfo('Mainīti | Changed', changedFiles.length);
-        logInfo('Nemainīti | Unchanged', Object.keys(unchangedFiles).length);
+        // Pārbauda dzēstos failus
+        for (const [filePath, info] of Object.entries(previousPaths)) {
+            if (!currentFiles.some(file => file.path === filePath)) {
+                deletedFiles++;
+                logInfo(`Dzēsts | Deleted: ${filePath}`, `hash: ${info.hash}`);
+            }
+        }
         
-        if (changedFiles.length === 0) {
+        logSection('📊 IZMAIŅU KOPSAVILKUMS | CHANGES SUMMARY');
+        logInfo('Jauni faili | New files', newFiles);
+        logInfo('Mainīti faili | Modified files', modifiedFiles);
+        logInfo('Nemainīti faili | Unchanged files', unchangedCount);
+        logInfo('Dzēsti faili | Deleted files', deletedFiles);
+        logInfo('Kopā mainīti | Total changed', changedFiles.length);
+        
+        if (changedFiles.length === 0 && deletedFiles === 0) {
             logSuccess('Nav izmaiņu | No changes');
             return res.json({
                 success: true,
@@ -636,7 +672,13 @@ app.post('/api/prepare-backup', async (req, res) => {
                 hasEnoughTreasury: true,
                 hasPreviousBackup: backupCount > 0,
                 backupCount,
-                message: 'Nav izmaiņu | No changes'
+                message: 'Nav izmaiņu | No changes',
+                stats: {
+                    newFiles,
+                    modifiedFiles,
+                    unchangedFiles: unchangedCount,
+                    deletedFiles
+                }
             });
         }
         
@@ -705,7 +747,13 @@ app.post('/api/prepare-backup', async (req, res) => {
             treasuryBalance: treasuryBalance.toString(),
             hasEnoughTreasury,
             hasPreviousBackup: backupCount > 0,
-            backupCount
+            backupCount,
+            stats: {
+                newFiles,
+                modifiedFiles,
+                unchangedFiles: unchangedCount,
+                deletedFiles
+            }
         });
         
     } catch (error) {
@@ -1139,9 +1187,16 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
             if (!fileResponse.ok) continue;
             
             const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+            
+            // SVARĪGI: Izmanto to pašu hash funkciju, kas tiek izmantota manifestā
             const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
             
-            files.push({ path: item.path, size: fileBuffer.length, content: fileBuffer.toString('base64'), hash });
+            files.push({ 
+                path: item.path, 
+                size: fileBuffer.length, 
+                content: fileBuffer.toString('base64'), 
+                hash: hash 
+            });
         } else if (item.type === 'dir') {
             const subFiles = await getRepoFiles(githubToken, owner, repo, item.path);
             files.push(...subFiles);
