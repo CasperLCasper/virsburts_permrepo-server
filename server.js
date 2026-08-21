@@ -14,7 +14,7 @@ import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
 import { checkAllServices } from './healthChecks.js';
-import { submitBackupWithMerkle } from './merkle.js';
+import { submitBackupWithMerkle, calculateMerkleRoot } from './merkle.js';
 
 // ============================================================
 // PATHS | CEĻI
@@ -1012,6 +1012,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         return res.json({
             success: true,
             manifestTxId: manifestResult.id,
+            manifestURI: 'ar://' + manifestResult.id,
             manifestCostEth
         });
         
@@ -1024,37 +1025,58 @@ app.post('/api/finalize-backup', async (req, res) => {
 });
 
 // ============================================================
-// FINALIZE BACKUP SIGN | PARAKSTĪT BACKUPU
+// FINALIZE BACKUP SIGN | PARAKSTĪT UN IERAKSTĪT BACKUPU
 // ============================================================
 
 app.post('/api/finalize-backup/sign', async (req, res) => {
     try {
-        const { tokenId, manifestTxId, files, deadline, signature } = req.body;
+        const { tokenId, manifestTxId, manifest, files, deadline, signature } = req.body;
         
+        logSection('📝 IERAKSTA BACKUPU BLOKĶĒDĒ | RECORD BACKUP ON BLOCKCHAIN');
+        logInfo('Token ID', tokenId);
+        logInfo('Manifest TX ID', manifestTxId);
+        logInfo('Failu skaits | Files count', files ? files.length : 0);
+        logInfo('Manifests nodots | Manifest provided', manifest ? '✅ JĀ | YES' : '❌ NĒ | NO');
+        
+        // Validācija
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
         if (!manifestTxId) return res.status(400).json({ success: false, error: 'Nav manifestTxId | Missing manifestTxId' });
         if (!signature) return res.status(400).json({ success: false, error: 'Nav signature | Missing signature' });
+        if (!deadline) return res.status(400).json({ success: false, error: 'Nav deadline | Missing deadline' });
         
         const provider = getProvider();
-        const nftContract = new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider);
+        const operatorWallet = getOperatorWallet(provider);
+        const nftWriteContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, operatorWallet);
+        const nftReadContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
         
-        const merkleTxHash = await submitBackupWithMerkle({
+        // Izsauc submitBackupWithMerkle ar visiem nepieciešamajiem parametriem
+        const result = await submitBackupWithMerkle({
             tokenId: tokenId,
             manifestTxId: manifestTxId,
+            manifest: manifest || null,
             files: files || [],
             deadline: deadline,
             signature: signature,
-            nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
-            readContract: nftContract
+            nftContract: nftWriteContract
         });
         
-        logSuccess('Merkle sakne iesniegta! | Merkle root submitted!');
-        logInfo('Transakcija | Transaction', merkleTxHash);
+        logSection('✅ BACKUPS VEIKSMĪGI IERAKSTĪTS | BACKUP SUCCESSFULLY RECORDED');
+        logInfo('Manifesta URI | Manifest URI', result.manifestURI);
+        logInfo('Manifesta hash | Manifest hash', result.manifestHash);
+        logInfo('Merkle sakne | Merkle root', result.merkleRoot);
+        logInfo('Transakcija | Transaction', result.txHash);
         
-        return res.json({ success: true, merkleTxHash });
+        return res.json({ 
+            success: true, 
+            addBackupTxHash: result.txHash,
+            manifestURI: result.manifestURI,
+            merkleRoot: result.merkleRoot
+        });
         
     } catch (error) {
-        logError('Sign kļūda | Sign error: ' + errorMessage(error));
+        logSection('❌ SIGN/BACKUP RECORD ERROR');
+        logError(errorMessage(error));
+        console.error(error);
         return res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
