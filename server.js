@@ -607,56 +607,20 @@ app.post('/api/prepare-backup', async (req, res) => {
         
         const changedFiles = [];
         const unchangedFiles = {};
-        let unchangedCount = 0;
-        let newFiles = 0;
-        let modifiedFiles = 0;
-        let deletedFiles = 0;
         
-        // IZLABOTA SALĪDZINĀŠANAS LOĢIKA
         for (const file of currentFiles) {
             const previousFile = previousPaths[file.path];
-            
-            if (previousFile) {
-                // Fails eksistēja iepriekš
-                if (previousFile.hash && previousFile.hash === file.hash) {
-                    // Hash sakrīt - fails nav mainījies
-                    unchangedFiles[file.path] = { 
-                        zipId: previousFile.zipId, 
-                        size: file.size, 
-                        hash: file.hash 
-                    };
-                    unchangedCount++;
-                } else {
-                    // Hash atšķiras - fails ir mainījies
-                    changedFiles.push(file);
-                    modifiedFiles++;
-                    logInfo(`Mainīts | Modified: ${file.path}`, 
-                        `Vecais hash: ${previousFile.hash || 'nav'}, Jaunais hash: ${file.hash}`);
-                }
+            if (previousFile && previousFile.zipId && previousFile.hash && previousFile.hash === file.hash) {
+                unchangedFiles[file.path] = { zipId: previousFile.zipId, size: file.size, hash: file.hash };
             } else {
-                // Jauns fails
                 changedFiles.push(file);
-                newFiles++;
-                logInfo(`Jauns | New: ${file.path}`, `hash: ${file.hash}`);
             }
         }
         
-        // Pārbauda dzēstos failus
-        for (const [filePath, info] of Object.entries(previousPaths)) {
-            if (!currentFiles.some(file => file.path === filePath)) {
-                deletedFiles++;
-                logInfo(`Dzēsts | Deleted: ${filePath}`, `hash: ${info.hash}`);
-            }
-        }
+        logInfo('Mainīti | Changed', changedFiles.length);
+        logInfo('Nemainīti | Unchanged', Object.keys(unchangedFiles).length);
         
-        logSection('📊 IZMAIŅU KOPSAVILKUMS | CHANGES SUMMARY');
-        logInfo('Jauni faili | New files', newFiles);
-        logInfo('Mainīti faili | Modified files', modifiedFiles);
-        logInfo('Nemainīti faili | Unchanged files', unchangedCount);
-        logInfo('Dzēsti faili | Deleted files', deletedFiles);
-        logInfo('Kopā mainīti | Total changed', changedFiles.length);
-        
-        if (changedFiles.length === 0 && deletedFiles === 0) {
+        if (changedFiles.length === 0) {
             logSuccess('Nav izmaiņu | No changes');
             return res.json({
                 success: true,
@@ -672,13 +636,7 @@ app.post('/api/prepare-backup', async (req, res) => {
                 hasEnoughTreasury: true,
                 hasPreviousBackup: backupCount > 0,
                 backupCount,
-                message: 'Nav izmaiņu | No changes',
-                stats: {
-                    newFiles,
-                    modifiedFiles,
-                    unchangedFiles: unchangedCount,
-                    deletedFiles
-                }
+                message: 'Nav izmaiņu | No changes'
             });
         }
         
@@ -747,13 +705,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             treasuryBalance: treasuryBalance.toString(),
             hasEnoughTreasury,
             hasPreviousBackup: backupCount > 0,
-            backupCount,
-            stats: {
-                newFiles,
-                modifiedFiles,
-                unchangedFiles: unchangedCount,
-                deletedFiles
-            }
+            backupCount
         });
         
     } catch (error) {
@@ -1078,13 +1030,12 @@ app.post('/api/finalize-backup', async (req, res) => {
 
 app.post('/api/finalize-backup/sign', async (req, res) => {
     try {
-        const { tokenId, manifestTxId, manifest, files, deadline, signature } = req.body;
+        const { tokenId, manifestTxId, files, deadline, signature } = req.body;
         
         logSection('📝 IERAKSTA BACKUPU BLOKĶĒDĒ | RECORD BACKUP ON BLOCKCHAIN');
         logInfo('Token ID', tokenId);
         logInfo('Manifest TX ID', manifestTxId);
         logInfo('Failu skaits | Files count', files ? files.length : 0);
-        logInfo('Manifests nodots | Manifest provided', manifest ? '✅ JĀ | YES' : '❌ NĒ | NO');
         
         // Validācija
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
@@ -1101,25 +1052,57 @@ app.post('/api/finalize-backup/sign', async (req, res) => {
         const result = await submitBackupWithMerkle({
             tokenId: tokenId,
             manifestTxId: manifestTxId,
-            manifest: manifest || null,
             files: files || [],
             deadline: deadline,
             signature: signature,
             nftContract: nftWriteContract
         });
         
-        logSection('✅ BACKUPS VEIKSMĪGI IERAKSTĪTS | BACKUP SUCCESSFULLY RECORDED');
-        logInfo('Manifesta URI | Manifest URI', result.manifestURI);
-        logInfo('Manifesta hash | Manifest hash', result.manifestHash);
-        logInfo('Merkle sakne | Merkle root', result.merkleRoot);
-        logInfo('Transakcija | Transaction', result.txHash);
+        // VERIFICĒ MANIFESTA URI BLOKĶĒDĒ
+        logSection('🔍 VERIFICĒ MANIFESTA URI BLOKĶĒDĒ | VERIFY MANIFEST URI ON BLOCKCHAIN');
         
-        return res.json({ 
-            success: true, 
-            addBackupTxHash: result.txHash,
-            manifestURI: result.manifestURI,
-            merkleRoot: result.merkleRoot
-        });
+        try {
+            const manifestURIOnChain = await nftReadContract.getManifestURI(tokenId);
+            logInfo('Manifesta URI blokķēdē | Manifest URI on chain', manifestURIOnChain);
+            
+            // Verificē URI
+            const expectedURI = `ar://${manifestTxId}`;
+            if (manifestURIOnChain === expectedURI) {
+                logSuccess('✅ Manifesta URI veiksmīgi ierakstīts un verificēts!');
+            } else {
+                logWarning(`⚠️ URI nesakrīt! Sagaidīts: ${expectedURI}, Ierakstīts: ${manifestURIOnChain}`);
+            }
+            
+            logSection('✅ BACKUPS VEIKSMĪGI IERAKSTĪTS | BACKUP SUCCESSFULLY RECORDED');
+            logInfo('Manifesta URI | Manifest URI', result.manifestURI);
+            logInfo('URI blokķēdē | URI on chain', manifestURIOnChain);
+            logInfo('Manifesta hash | Manifest hash', result.manifestHash);
+            logInfo('Merkle sakne | Merkle root', result.merkleRoot);
+            logInfo('Transakcija | Transaction', result.txHash);
+            
+            return res.json({ 
+                success: true, 
+                addBackupTxHash: result.txHash,
+                manifestURI: result.manifestURI,
+                manifestURIOnChain: manifestURIOnChain,
+                merkleRoot: result.merkleRoot
+            });
+            
+        } catch (verifyError) {
+            logWarning('Nevar verificēt URI | Cannot verify URI: ' + errorMessage(verifyError));
+            
+            logSection('✅ BACKUPS IERAKSTĪTS (BEZ VERIFIKĀCIJAS) | BACKUP RECORDED (WITHOUT VERIFICATION)');
+            logInfo('Manifesta URI | Manifest URI', result.manifestURI);
+            logInfo('Transakcija | Transaction', result.txHash);
+            
+            return res.json({ 
+                success: true, 
+                addBackupTxHash: result.txHash,
+                manifestURI: result.manifestURI,
+                manifestURIOnChain: null,
+                merkleRoot: result.merkleRoot
+            });
+        }
         
     } catch (error) {
         logSection('❌ SIGN/BACKUP RECORD ERROR');
@@ -1187,16 +1170,9 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
             if (!fileResponse.ok) continue;
             
             const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
-            
-            // SVARĪGI: Izmanto to pašu hash funkciju, kas tiek izmantota manifestā
             const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
             
-            files.push({ 
-                path: item.path, 
-                size: fileBuffer.length, 
-                content: fileBuffer.toString('base64'), 
-                hash: hash 
-            });
+            files.push({ path: item.path, size: fileBuffer.length, content: fileBuffer.toString('base64'), hash });
         } else if (item.type === 'dir') {
             const subFiles = await getRepoFiles(githubToken, owner, repo, item.path);
             files.push(...subFiles);
