@@ -519,6 +519,43 @@ app.post('/api/prepare-backup', async (req, res) => {
         logInfo('Repo', repoName);
         logInfo('Wallet', walletAddress);
         
+        // ============================================================
+        // VESELĪBAS PĀRBAUDES (PIRMS JEBKĀDA DARBA) | HEALTH CHECKS (BEFORE ANY WORK)
+        // ============================================================
+        
+        if (HEALTH_CHECKS_ENABLED) {
+            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
+            
+            const healthParams = {
+                redis,
+                rpcUrl: RPC_URL,
+                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
+                treasuryAddress: TREASURY_ADDRESS,
+                nftAddress: NFT_ADDRESS,
+                subscriptionAddress: SUBSCRIPTION_ADDRESS,
+                registryAddress: REGISTRY_ADDRESS
+            };
+            
+            const health = await checkAllServices(healthParams);
+            
+            if (!health.allHealthy) {
+                logError('❌ Servisi nav pieejami! Process tiek BLOĶĒTS!');
+                return res.status(503).json({
+                    success: false,
+                    error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
+                    health
+                });
+            }
+            
+            logSuccess('✅ Visi servisi ir pieejami!');
+        } else {
+            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
+        }
+        
+        // ============================================================
+        // TURPINA DARBU (TIKAI PĒC PĀRBAUDES) | CONTINUE WORK (AFTER CHECK)
+        // ============================================================
+        
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repo nosaukuma | Missing repo name' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet adreses | Missing wallet address' });
         if (!githubToken) return res.status(401).json({ success: false, error: 'Nav GitHub autorizācijas | No GitHub authorization' });
@@ -760,39 +797,6 @@ app.post('/api/execute-backup', async (req, res) => {
         if (repoId === ethers.ZeroHash) return res.status(400).json({ success: false, error: 'Repo nav reģistrēts Registry | Repo not registered in Registry' });
         
         const turbo = getTurbo();
-        
-        // ============================================================
-        // VESELĪBAS PĀRBAUDES (JA IESLĒGTAS) | HEALTH CHECKS (IF ENABLED)
-        // ============================================================
-        
-        if (HEALTH_CHECKS_ENABLED) {
-            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
-            
-            const healthParams = {
-                redis,
-                rpcUrl: RPC_URL,
-                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
-                treasuryAddress: TREASURY_ADDRESS,
-                nftAddress: NFT_ADDRESS,
-                subscriptionAddress: SUBSCRIPTION_ADDRESS,
-                registryAddress: REGISTRY_ADDRESS
-            };
-            
-            const health = await checkAllServices(healthParams);
-            
-            if (!health.allHealthy) {
-                logError('❌ Servisi nav pieejami! Process tiek BLOĶĒTS!');
-                return res.status(503).json({
-                    success: false,
-                    error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
-                    health
-                });
-            }
-            
-            logSuccess('✅ Visi servisi ir pieejami!');
-        } else {
-            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
-        }
         
         // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
