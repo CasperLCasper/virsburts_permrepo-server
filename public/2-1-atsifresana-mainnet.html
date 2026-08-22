@@ -179,7 +179,11 @@
             const provider = new ethers.BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
             const signature = await signer.signMessage('PermRepo encryption key');
-            const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(signature));
+            
+            // Noņem 0x prefiksu
+            const cleanSignature = signature.slice(2);
+            
+            const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cleanSignature));
             return await crypto.subtle.importKey(
                 'raw',
                 hash,
@@ -258,8 +262,8 @@
                         const zipBuffer = await fetchFromArweave(zipId);
                         
                         // Atšifrē ZIP ar IV un Auth-Tag no manifesta
-                        const iv = new Uint8Array(Buffer.from(manifest.archive.iv, 'base64'));
-                        const authTag = new Uint8Array(Buffer.from(manifest.archive.authTag, 'base64'));
+                        const iv = new Uint8Array(atob(manifest.archive.iv).split('').map(char => char.charCodeAt(0)));
+                        const authTag = new Uint8Array(atob(manifest.archive.authTag).split('').map(char => char.charCodeAt(0)));
                         const decrypted = await crypto.subtle.decrypt(
                             { name: 'AES-GCM', iv, additionalData: authTag },
                             encryptionKey,
