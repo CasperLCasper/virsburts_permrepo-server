@@ -519,43 +519,6 @@ app.post('/api/prepare-backup', async (req, res) => {
         logInfo('Repo', repoName);
         logInfo('Wallet', walletAddress);
         
-        // ============================================================
-        // VESELĪBAS PĀRBAUDES (PIRMS JEBKĀDA DARBA) | HEALTH CHECKS (BEFORE ANY WORK)
-        // ============================================================
-        
-        if (HEALTH_CHECKS_ENABLED) {
-            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
-            
-            const healthParams = {
-                redis,
-                rpcUrl: RPC_URL,
-                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
-                treasuryAddress: TREASURY_ADDRESS,
-                nftAddress: NFT_ADDRESS,
-                subscriptionAddress: SUBSCRIPTION_ADDRESS,
-                registryAddress: REGISTRY_ADDRESS
-            };
-            
-            const health = await checkAllServices(healthParams);
-            
-            if (!health.allHealthy) {
-                logError('❌ Servisi nav pieejami! Process tiek BLOĶĒTS!');
-                return res.status(503).json({
-                    success: false,
-                    error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
-                    health
-                });
-            }
-            
-            logSuccess('✅ Visi servisi ir pieejami!');
-        } else {
-            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
-        }
-        
-        // ============================================================
-        // TURPINA DARBU (TIKAI PĒC PĀRBAUDES) | CONTINUE WORK (AFTER CHECK)
-        // ============================================================
-        
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repo nosaukuma | Missing repo name' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet adreses | Missing wallet address' });
         if (!githubToken) return res.status(401).json({ success: false, error: 'Nav GitHub autorizācijas | No GitHub authorization' });
@@ -815,6 +778,20 @@ app.post('/api/execute-backup', async (req, res) => {
         logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
         
         // ============================================================
+        // 1.5 ZIP ŠIFRĒŠANA | ZIP ENCRYPTION
+        // ============================================================
+        
+        const encryptionKey = crypto.createHash('sha256').update(walletAddress).digest();
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey, iv);
+        const encryptedZip = Buffer.concat([cipher.update(zipBuffer), cipher.final()]);
+        const authTag = cipher.getAuthTag();
+        
+        logInfo('ZIP šifrēts | ZIP encrypted', '✅');
+        logInfo('IV', iv.toString('base64'));
+        logInfo('Auth-Tag', authTag.toString('base64'));
+        
+        // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
         // ============================================================
         
@@ -850,15 +827,17 @@ app.post('/api/execute-backup', async (req, res) => {
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
-            fileStreamFactory: () => Readable.from(zipBuffer),
-            fileSizeFactory: () => zipBuffer.length,
+            fileStreamFactory: () => Readable.from(encryptedZip),
+            fileSizeFactory: () => encryptedZip.length,
             dataItemOpts: {
                 tags: [
                     { name: 'App-Name', value: 'PermRepo' },
                     { name: 'Repo', value: repoName },
-                    { name: 'Type', value: 'backup-archive' },
-                    { name: 'Content-Type', value: 'application/zip' },
-                    { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
+                    { name: 'Encrypted', value: 'true' },
+                    { name: 'Cipher', value: 'AES-256-GCM' },
+                    { name: 'Cipher-IV', value: iv.toString('base64') },
+                    { name: 'Auth-Tag', value: authTag.toString('base64') },
+                    { name: 'Content-Type', value: 'application/zip' }
                 ]
             }
         });
@@ -911,10 +890,8 @@ app.post('/api/execute-backup', async (req, res) => {
             archive: {
                 id: zipResult.id,
                 url: `${ARWEAVE_GATEWAY}/raw/${zipResult.id}`,
-                contains: files.map(file => ({
-                    path: file.path,
-                    hash: file.hash
-                }))
+                iv: iv.toString('base64'),
+                authTag: authTag.toString('base64')
             },
             paths: {},
             history
