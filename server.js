@@ -13,6 +13,9 @@ import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
 import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
+import { checkAllServices } from './healthChecks.js';
+import { submitBackupWithMerkle } from './merkle.js';
+
 // ============================================================
 // PATHS | CEĻI
 // ============================================================
@@ -48,6 +51,12 @@ const TURBO_UPLOAD_URL = process.env.TURBO_UPLOAD_URL || 'https://upload.service
 const TURBO_PAYMENT_URL = process.env.TURBO_PAYMENT_URL || 'https://payment.services.ar-io.dev';
 const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+// ============================================================
+// HEALTH CHECKS TOGGLE | VESELĪBAS PĀRBAUŽU SLĒDZIS
+// ============================================================
+
+const HEALTH_CHECKS_ENABLED = process.env.HEALTH_CHECKS_ENABLED === 'true';
 
 // ============================================================
 // REDIS | REDIS
@@ -95,7 +104,8 @@ const NFT_ABI = [
     "function ownerOf(uint256 tokenId) external view returns (address)",
     "function getBackupCount(uint256 tokenId) external view returns (uint256)",
     "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)"
+    "function getNonce(uint256 tokenId) external view returns (uint256)",
+    "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external"
 ];
 
 const SUBSCRIPTION_ABI = [
@@ -509,6 +519,43 @@ app.post('/api/prepare-backup', async (req, res) => {
         logInfo('Repo', repoName);
         logInfo('Wallet', walletAddress);
         
+        // ============================================================
+        // VESELĪBAS PĀRBAUDES (PIRMS JEBKĀDA DARBA) | HEALTH CHECKS (BEFORE ANY WORK)
+        // ============================================================
+        
+        if (HEALTH_CHECKS_ENABLED) {
+            logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
+            
+            const healthParams = {
+                redis,
+                rpcUrl: RPC_URL,
+                operatorPrivateKey: OPERATOR_PRIVATE_KEY,
+                treasuryAddress: TREASURY_ADDRESS,
+                nftAddress: NFT_ADDRESS,
+                subscriptionAddress: SUBSCRIPTION_ADDRESS,
+                registryAddress: REGISTRY_ADDRESS
+            };
+            
+            const health = await checkAllServices(healthParams);
+            
+            if (!health.allHealthy) {
+                logError('❌ Servisi nav pieejami! Process tiek BLOĶĒTS!');
+                return res.status(503).json({
+                    success: false,
+                    error: 'Servisi nav pieejami. Lūdzu mēģini vēlreiz vēlāk.',
+                    health
+                });
+            }
+            
+            logSuccess('✅ Visi servisi ir pieejami!');
+        } else {
+            logSection('🩺 VESELĪBAS PĀRBAUDES IZSLĒGTAS');
+        }
+        
+        // ============================================================
+        // TURPINA DARBU (TIKAI PĒC PĀRBAUDES) | CONTINUE WORK (AFTER CHECK)
+        // ============================================================
+        
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repo nosaukuma | Missing repo name' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav wallet adreses | Missing wallet address' });
         if (!githubToken) return res.status(401).json({ success: false, error: 'Nav GitHub autorizācijas | No GitHub authorization' });
@@ -751,7 +798,10 @@ app.post('/api/execute-backup', async (req, res) => {
         
         const turbo = getTurbo();
         
+        // ============================================================
         // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
+        // ============================================================
+        
         logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
         const zip = new JSZip();
         
@@ -764,7 +814,10 @@ app.post('/api/execute-backup', async (req, res) => {
         const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
         logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
         
+        // ============================================================
         // 2. ZIP APMAKSA | ZIP PAYMENT
+        // ============================================================
+        
         const fileCostWei = ethers.parseEther(fileCostEth);
         
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
@@ -790,7 +843,10 @@ app.post('/api/execute-backup', async (req, res) => {
             logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
         }
         
+        // ============================================================
         // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
+        // ============================================================
+        
         logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
@@ -810,12 +866,18 @@ app.post('/api/execute-backup', async (req, res) => {
         
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
+        // ============================================================
         // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        // ============================================================
+        
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
         await setUserCredits(walletAddress, BigInt(newUserCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
+        // ============================================================
         // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // ============================================================
+        
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
         
         const history = [...(previousHistory || [])];
@@ -933,16 +995,27 @@ app.post('/api/execute-backup', async (req, res) => {
 
 app.post('/api/finalize-backup', async (req, res) => {
     try {
-        const { repoName, manifest, manifestCostEth, walletAddress, newManifestCredits } = req.body;
+        const { 
+            repoName, 
+            manifest, 
+            manifestCostEth, 
+            walletAddress, 
+            newManifestCredits,
+            tokenId,
+            files
+        } = req.body;
         
         logSection('📄 FINALIZE BACKUP | PABEIGT BACKUPU');
         logInfo('Repo', repoName);
+        logInfo('Token ID', tokenId);
+        logInfo('Faili | Files', files ? files.length : 0);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest | Missing manifest' });
         if (manifestCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav manifestCostEth | Missing manifestCostEth' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
+        if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
         
         const provider = getProvider();
         const turbo = getTurbo();
@@ -1001,7 +1074,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         await setUserCredits(walletAddress, BigInt(newManifestCredits || '0'));
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
-        logSection('✅ BACKUPS VEIKSMĪGS | BACKUP SUCCESSFUL');
+        logSection('✅ MANIFESTS AUGŠUPIELĀDĒTS | MANIFEST UPLOADED');
         logInfo('Manifests', 'ar://' + manifestResult.id);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
         
@@ -1015,6 +1088,42 @@ app.post('/api/finalize-backup', async (req, res) => {
         logSection('❌ FINALIZE BACKUP ERROR');
         logError(errorMessage(error));
         console.error(error);
+        return res.status(500).json({ success: false, error: errorMessage(error) });
+    }
+});
+
+// ============================================================
+// FINALIZE BACKUP SIGN | PARAKSTĪT BACKUPU
+// ============================================================
+
+app.post('/api/finalize-backup/sign', async (req, res) => {
+    try {
+        const { tokenId, manifestTxId, files, deadline, signature } = req.body;
+        
+        if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
+        if (!manifestTxId) return res.status(400).json({ success: false, error: 'Nav manifestTxId | Missing manifestTxId' });
+        if (!signature) return res.status(400).json({ success: false, error: 'Nav signature | Missing signature' });
+        
+        const provider = getProvider();
+        const nftContract = new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, provider);
+        
+        const merkleTxHash = await submitBackupWithMerkle({
+            tokenId: tokenId,
+            manifestTxId: manifestTxId,
+            files: files || [],
+            deadline: deadline,
+            signature: signature,
+            nftContract: new ethers.Contract(process.env.NFT_ADDRESS, NFT_ABI, getOperatorWallet(provider)),
+            readContract: nftContract
+        });
+        
+        logSuccess('Merkle sakne iesniegta! | Merkle root submitted!');
+        logInfo('Transakcija | Transaction', merkleTxHash);
+        
+        return res.json({ success: true, merkleTxHash });
+        
+    } catch (error) {
+        logError('Sign kļūda | Sign error: ' + errorMessage(error));
         return res.status(500).json({ success: false, error: errorMessage(error) });
     }
 });
@@ -1060,7 +1169,6 @@ async function getRepoFiles(githubToken, owner, repo, repoPath = '') {
     });
     
     if (!response.ok) throw new Error(`GitHub API kļūda | error: ${response.status}`);
-    
     const contents = await response.json();
     if (!Array.isArray(contents)) return files;
     
