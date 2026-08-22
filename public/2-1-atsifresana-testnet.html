@@ -159,16 +159,13 @@
             return await response.arrayBuffer();
         }
         
-        // MetaMask parakstīšana un atslēgas atvasināšana
+        // Atslēgas atvasināšana no walletAddress
         async function getEncryptionKey() {
             const provider = new ethers.BrowserProvider(window.ethereum);
             const signer = await provider.getSigner();
-            const signature = await signer.signMessage('PermRepo encryption key');
+            const walletAddress = await signer.getAddress();
             
-            // Noņem 0x prefiksu
-            const cleanSignature = signature.slice(2);
-            
-            const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cleanSignature));
+            const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(walletAddress));
             return await crypto.subtle.importKey(
                 'raw',
                 hash,
@@ -233,7 +230,7 @@
                 
                 showStatus(`📦 Downloading ${zipIds.size} archives...`, 'info');
                 
-                // 3. Iegūst atslēgu no MetaMask paraksta
+                // 3. Iegūst atslēgu no walletAddress
                 const encryptionKey = await getEncryptionKey();
                 
                 // 4. Lejupielādē un atšifrē katru ZIP
