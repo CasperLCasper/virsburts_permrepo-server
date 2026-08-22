@@ -1106,6 +1106,23 @@ app.post('/api/finalize-backup/sign', async (req, res) => {
 });
 
 // ============================================================
+// FETCH ARWEAVE PROXY | ARWEAVE STARPNIECĪBA
+// ============================================================
+
+app.get('/api/fetch-arweave/:txId', async (req, res) => {
+    try {
+        const response = await fetch(`${ARWEAVE_GATEWAY}/raw/${req.params.txId}`);
+        if (!response.ok) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const data = await response.arrayBuffer();
+        res.send(Buffer.from(data));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================
 // CONTENT TYPE | SATURA TIPS
 // ============================================================
 
@@ -1215,6 +1232,7 @@ app.listen(PORT, () => {
     logInfo('NFT_ADDRESS', NFT_ADDRESS || '❌ NAV | NO');
     logInfo('SUBSCRIPTION_ADDRESS', SUBSCRIPTION_ADDRESS || '❌ NAV | NO');
     logInfo('REGISTRY_ADDRESS', REGISTRY_ADDRESS || '❌ NAV | NO');
+    logInfo('ARWEAVE_GATEWAY', ARWEAVE_GATEWAY);
     logInfo('TURBO_TOKEN', TURBO_TOKEN);
     logInfo('TURBO_UPLOAD_URL', TURBO_UPLOAD_URL);
     logInfo('TURBO_PAYMENT_URL', TURBO_PAYMENT_URL);
