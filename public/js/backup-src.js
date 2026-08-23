@@ -19,6 +19,7 @@ let currentUploadedFiles = [];
 let currentNewManifestCredits = '0';
 let hasDepositedFiles = false;
 let hasDepositedManifest = false;
+let encryptionKey = null;
 
 // NFT līguma ABI | NFT contract ABI
 const NFT_ABI = [
@@ -122,6 +123,7 @@ async function connectWallet() {
         const provider = new ethers.BrowserProvider(window.ethereum);
         const signer = await provider.getSigner();
         userAddress = await signer.getAddress();
+        encryptionKey = await getEncryptionKey(signer);
         
         document.getElementById('walletInput').value = userAddress;
         setStatus('Maks savienots: ' + userAddress.substring(0, 10) + '...');
@@ -134,6 +136,42 @@ async function connectWallet() {
         showError(e.message);
     }
 }
+
+// ============================================================
+// ŠIFRĒŠANAS ATSLĒGAS IEGŪŠANA | GET ENCRYPTION KEY
+// ============================================================
+
+async function getEncryptionKey(signer) {
+    const message = 'PermRepo šifrēšanas atslēga';
+    const signature = await signer.signMessage(message);
+    const key = ethers.keccak256(ethers.toUtf8Bytes(signature));
+    return key;
+}
+
+async function encryptData(data, key) {
+    const keyBytes = new Uint8Array(32);
+    const keyHex = key.slice(2);
+    for (let i = 0; i < 32; i++) {
+        keyBytes[i] = parseInt(keyHex.substring(i * 2, i * 2 + 2), 16);
+    }
+    
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyBytes, 'AES-GCM', false, ['encrypt']
+    );
+    
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encrypted = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        cryptoKey,
+        data
+    );
+    
+    return { encrypted: new Uint8Array(encrypted), iv };
+}
+
+// ============================================================
+// REPO STATUS | REPO STATUSS
+// ============================================================
 
 async function checkRepoStatus(repoName) {
     currentRepo = repoName;
@@ -193,6 +231,10 @@ async function checkRepoStatus(repoName) {
     }
 }
 
+// ============================================================
+// PREPARE BACKUP | SAGATAVOT BACKUPU
+// ============================================================
+
 async function prepareBackup() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
@@ -238,6 +280,10 @@ async function prepareBackup() {
     }
 }
 
+// ============================================================
+// EXECUTE ZIP UPLOAD | IZPILDĪT ZIP AUGŠUPIELĀDI
+// ============================================================
+
 async function executeZipUpload() {
     const button = document.getElementById('backupButton');
     button.disabled = true;
@@ -270,8 +316,25 @@ async function executeZipUpload() {
             hasDepositedFiles = true;
         }
         
-        setStatus('Serveris veido ZIP un augšupielādē...');
-        button.textContent = '⏳ ZIP...';
+        setStatus('Klienta pusē izveidojam un šifrējam ZIP...');
+        button.textContent = '⏳ ZIP + šifrēšana...';
+        
+        // 1. Izveidojam ZIP failu klienta pusē
+        const zip = new JSZip();
+        for (const file of currentFiles) {
+            const fileBuffer = Buffer.from(file.content, 'base64');
+            zip.file(file.path, fileBuffer);
+        }
+        
+        const zipBuffer = await zip.generateAsync({ type: 'uint8array' });
+        setStatus('ZIP izveidots! Šifrējam...');
+        
+        // 2. Šifrējam ZIP failu
+        const { encrypted, iv } = await encryptData(zipBuffer, encryptionKey);
+        
+        // 3. Nosūtām šifrēto ZIP uz serveri
+        setStatus('Augšupielādējam šifrēto ZIP...');
+        button.textContent = '⏳ Augšupielāde...';
         
         const response = await fetch('/api/execute-backup', {
             method: 'POST',
@@ -285,7 +348,9 @@ async function executeZipUpload() {
                 walletAddress: userAddress,
                 previousHistory: currentPreviousHistory,
                 previousManifestId: currentPreviousManifestId,
-                previousBackupNumber: currentPreviousBackupNumber
+                previousBackupNumber: currentPreviousBackupNumber,
+                encryptedZip: Array.from(encrypted),
+                iv: Array.from(iv)
             })
         });
         
