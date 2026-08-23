@@ -70,6 +70,40 @@ const TREASURY_ABI = [
 ];
 
 // ============================================================
+// PALĪGFUNKCIJA: ĶĒDES PĀRBAUDE | HELPER: CHAIN CHECK
+// ============================================================
+
+async function ensureCorrectChain() {
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const network = await provider.getNetwork();
+    const targetChainId = parseInt(CONFIG.chainId, 16);
+    
+    if (network.chainId !== BigInt(targetChainId)) {
+        try {
+            await window.ethereum.request({
+                method: 'wallet_switchEthereumChain',
+                params: [{ chainId: CONFIG.chainId }]
+            });
+        } catch (switchError) {
+            // Ja ķēde nav pievienota, mēģinām to pievienot
+            if (switchError.code === 4902) {
+                await window.ethereum.request({
+                    method: 'wallet_addEthereumChain',
+                    params: [{
+                        chainId: CONFIG.chainId,
+                        chainName: 'Base Sepolia',
+                        rpcUrls: [CONFIG.rpcUrl],
+                        nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }
+                    }]
+                });
+            } else {
+                throw switchError;
+            }
+        }
+    }
+}
+
+// ============================================================
 // INITIALIZATION | INICIALIZĀCIJA
 // ============================================================
 
@@ -160,10 +194,7 @@ async function connectWallet() {
     }
     
     try {
-        await window.ethereum.request({ 
-            method: 'wallet_switchEthereumChain', 
-            params: [{ chainId: CONFIG.chainId }] 
-        });
+        await ensureCorrectChain();
         
         const provider = new ethers.BrowserProvider(window.ethereum);
         const signer = await provider.getSigner();
@@ -346,6 +377,9 @@ async function executeZipUpload() {
                 setStatus('Iemaksājam Treasury par ZIP...');
                 button.textContent = '⏳ Iemaksā...';
                 
+                // ✅ Pārbaudām un pārslēdzam ķēdi pirms transakcijas
+                await ensureCorrectChain();
+                
                 const tx = await signer.sendTransaction({
                     to: CONFIG.treasuryAddress,
                     value: fileCostWei
@@ -457,6 +491,9 @@ async function finalizeBackup() {
             if (balance < manifestCostWei) {
                 setStatus('Iemaksājam Treasury par manifestu...');
                 button.textContent = '⏳ Iemaksā...';
+                
+                // ✅ Pārbaudām un pārslēdzam ķēdi pirms transakcijas
+                await ensureCorrectChain();
                 
                 const tx = await signer.sendTransaction({
                     to: CONFIG.treasuryAddress,
