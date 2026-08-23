@@ -74,7 +74,6 @@ const TREASURY_ABI = [
 // ============================================================
 
 async function init() {
-    // Pārbauda, vai JSZip ir pieejams
     try {
         await loadJSZipFromCDN();
     } catch (e) {
@@ -346,6 +345,7 @@ async function executeZipUpload() {
                 setStatus('Iemaksājam Treasury par ZIP...');
                 button.textContent = '⏳ Iemaksā...';
                 
+                // ✅ NOŅEMTA ensureCorrectChain() — MetaMask tagad saņems pieprasījumu
                 const tx = await signer.sendTransaction({
                     to: CONFIG.treasuryAddress,
                     value: fileCostWei
@@ -457,6 +457,7 @@ async function finalizeBackup() {
                 setStatus('Iemaksājam Treasury par manifestu...');
                 button.textContent = '⏳ Iemaksā...';
                 
+                // ✅ NOŅEMTA ensureCorrectChain() — MetaMask tagad saņems pieprasījumu
                 const tx = await signer.sendTransaction({
                     to: CONFIG.treasuryAddress,
                     value: manifestCostWei
