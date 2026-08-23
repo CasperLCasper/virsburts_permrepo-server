@@ -2,7 +2,15 @@
 // Priekšpuses loģika backupu un atjaunošanai.
 
 const { ethers } = window;
-const JSZip = window.JSZip; // ✅ Iegūstam JSZip no globālā (CDN)
+let JSZip = window.JSZip;
+
+// Pārbauda, vai JSZip ir konstruktors (funkcija)
+if (typeof JSZip === 'undefined') {
+    console.error('JSZip nav ielādēts!');
+} else if (typeof JSZip !== 'function') {
+    // Dažreiz CDN atgriež moduli ar default eksportu
+    JSZip = JSZip.default || JSZip;
+}
 
 let CONFIG = {};
 let userAddress = null;
