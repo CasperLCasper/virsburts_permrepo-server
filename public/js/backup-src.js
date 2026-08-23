@@ -367,7 +367,8 @@ async function executeZipUpload() {
         // 1. Izveidojam ZIP failu klienta pusē
         const zip = new JSZip();
         for (const file of currentFiles) {
-            const fileBuffer = Buffer.from(file.content, 'base64');
+            // Aizstājam Buffer.from ar Uint8Array no base64
+            const fileBuffer = Uint8Array.from(atob(file.content), c => c.charCodeAt(0));
             zip.file(file.path, fileBuffer);
         }
         
