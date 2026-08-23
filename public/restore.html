@@ -133,7 +133,18 @@
             }
             
             try {
+                // Pārbauda un pārslēdz uz Base Sepolia
                 const provider = new ethers.BrowserProvider(window.ethereum);
+                const network = await provider.getNetwork();
+                const targetChainId = parseInt('0x14a34', 16);
+                
+                if (network.chainId !== BigInt(targetChainId)) {
+                    await window.ethereum.request({
+                        method: 'wallet_switchEthereumChain',
+                        params: [{ chainId: '0x14a34' }]
+                    });
+                }
+                
                 signer = await provider.getSigner();
                 userAddress = await signer.getAddress();
                 
