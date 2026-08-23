@@ -394,7 +394,7 @@ async function finalizeBackup() {
             const currentNonce = await readContract.getNonce(currentTokenId);
             const backupNumber = await readContract.getBackupCount(currentTokenId);
             
-            const manifestURI = `https://ar-io.dev/raw/${manifestTxId}`;
+            const manifestURI = `ar://${manifestTxId}`;
             const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
             
             // Merkle sakne – aprēķina no currentUploadedFiles
@@ -456,7 +456,7 @@ async function finalizeBackup() {
                 
                 document.getElementById('status').innerHTML = 
                     `✅ Backups veiksmīgs!<br>` +
-                    `Manifests TX ID: <code>${manifestTxId}</code><br>` +
+                    `Manifests: <a href="${CONFIG.arweaveGateway}/raw/${manifestTxId}" target="_blank">ar://${manifestTxId}</a><br>` +
                     `Faili ZIP: ${currentUploadedFiles.length}<br>` +
                     `ZIP izmaksas: ${currentFileCostEth} ETH<br>` +
                     `Manifesta izmaksas: ${currentManifestCostEth} ETH`;
