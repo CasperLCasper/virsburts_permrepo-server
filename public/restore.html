@@ -133,19 +133,8 @@
             }
             
             try {
-                // Pārbauda un pārslēdz uz Base Sepolia
                 const provider = new ethers.BrowserProvider(window.ethereum);
-                const network = await provider.getNetwork();
-                const targetChainId = parseInt('0x14a34', 16);
-                
-                if (network.chainId !== BigInt(targetChainId)) {
-                    await window.ethereum.request({
-                        method: 'wallet_switchEthereumChain',
-                        params: [{ chainId: '0x14a34' }]
-                    });
-                }
-                
-                signer = await provider.getSigner();
+                const signer = await provider.getSigner();
                 userAddress = await signer.getAddress();
                 
                 document.getElementById('walletStatus').textContent = userAddress.substring(0, 10) + '...';
@@ -273,16 +262,18 @@
                     {
                         backupNumber: manifest.metadata?.backupNumber || 1,
                         manifestId: manifestTxId,
-                        paths: manifest.paths
+                        paths: manifest.paths,
+                        manifest: manifest
                     },
                     ...manifest.history.map(h => ({
                         backupNumber: h.backupNumber,
                         manifestId: h.manifestId,
-                        paths: null // Mēs to ielādēsim vēlāk
+                        paths: null, // Mēs to ielādēsim vēlāk
+                        manifest: null
                     }))
                 ];
                 
-                // 5. Lejupielādējam visus vecos manifestus, lai iegūtu paths
+                // 5. Lejupielādējam visus vecos manifestus, lai iegūtu paths un IV
                 showStatus('🔍 Lejupielādējam visus backupu manifestus...', 'status');
                 showProgress(15);
                 
@@ -294,6 +285,7 @@
                             const backupManifestText = new TextDecoder().decode(backupManifestBuffer);
                             const backupManifest = JSON.parse(backupManifestText);
                             backup.paths = backupManifest.paths;
+                            backup.manifest = backupManifest;
                             showDebug(`Backup #${backup.backupNumber}: ${Object.keys(backup.paths).length} faili`);
                         } catch (e) {
                             showDebug(`❌ Neizdevās iegūt backup #${backup.backupNumber}: ${e.message}`);
@@ -337,12 +329,39 @@
                 const zipContents = {};
                 let downloadedCount = 0;
                 
+                // Izveidojam IV mapi: zipId -> iv
+                const zipIVMap = {};
+                
+                // Analizējam visus manifestus, lai atrastu IV katram ZIP failam
+                for (const backup of allBackups) {
+                    if (backup.manifest && backup.manifest.encryption?.iv) {
+                        const iv = backup.manifest.encryption.iv;
+                        
+                        // Pievienojam IV visiem ZIP failiem, kas parādās šajā manifestā
+                        if (backup.manifest.paths) {
+                            for (const [filePath, info] of Object.entries(backup.manifest.paths)) {
+                                const zipId = info.zipId || info.id;
+                                if (zipId) {
+                                    zipIVMap[zipId] = iv;
+                                }
+                            }
+                        }
+                        
+                        // Pievienojam IV arī archive.id
+                        if (backup.manifest.archive?.id) {
+                            zipIVMap[backup.manifest.archive.id] = iv;
+                        }
+                    }
+                }
+                
+                // Tagad mēģinām atšifrēt katru ZIP failu ar tā atbilstošo IV
                 for (const zipId of zipIds) {
                     try {
                         const zipBuffer = await fetchFromArweave(zipId);
                         
-                        // Atšifrējam ZIP failu, izmantojot IV no manifesta
-                        const iv = manifest.encryption?.iv || [];
+                        // Atrodam IV šim ZIP failam
+                        const iv = zipIVMap[zipId] || manifest.encryption?.iv || [];
+                        
                         const decryptedZipBuffer = await decryptData(zipBuffer, iv, encryptionKey);
                         
                         zipContents[zipId] = await JSZip.loadAsync(decryptedZipBuffer);
