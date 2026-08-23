@@ -61,7 +61,7 @@ export async function submitBackupWithMerkle(params) {
 
     // 2. Sagatavo manifest URI un hešu.
     //    Prepare manifest URI and hash.
-    const manifestURI = `https://ar-io.dev/raw/${manifestTxId}`;
+    const manifestURI = `ar://${manifestTxId}`;
     const manifestHash = ethers.keccak256(ethers.toUtf8Bytes(manifestURI));
 
     // 3. Iegūst pašreizējo nonce un backupNumber.
