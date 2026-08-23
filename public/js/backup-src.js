@@ -2,14 +2,41 @@
 // Priekšpuses loģika backupu un atjaunošanai.
 
 const { ethers } = window;
-let JSZip = window.JSZip;
 
-// Pārbauda, vai JSZip ir konstruktors (funkcija)
-if (typeof JSZip === 'undefined') {
-    console.error('JSZip nav ielādēts!');
-} else if (typeof JSZip !== 'function') {
-    // Dažreiz CDN atgriež moduli ar default eksportu
-    JSZip = JSZip.default || JSZip;
+// Pārbauda JSZip pieejamību
+let JSZip = null;
+function ensureJSZip() {
+    if (typeof window.JSZip !== 'undefined') {
+        JSZip = window.JSZip;
+        // Dažreiz CDN atgriež moduli ar default eksportu
+        if (typeof JSZip !== 'function') {
+            JSZip = JSZip.default || JSZip;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Mēģina ielādēt JSZip, ja tas vēl nav pieejams
+function loadJSZipFromCDN() {
+    return new Promise((resolve, reject) => {
+        if (ensureJSZip()) {
+            resolve();
+            return;
+        }
+        
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        script.onload = () => {
+            if (ensureJSZip()) {
+                resolve();
+            } else {
+                reject(new Error('JSZip nav ielādēts no CDN'));
+            }
+        };
+        script.onerror = () => reject(new Error('Neizdevās ielādēt JSZip no CDN'));
+        document.head.appendChild(script);
+    });
 }
 
 let CONFIG = {};
@@ -47,6 +74,15 @@ const TREASURY_ABI = [
 // ============================================================
 
 async function init() {
+    // Pārbauda, vai JSZip ir pieejams
+    try {
+        await loadJSZipFromCDN();
+    } catch (e) {
+        console.error('JSZip nav ielādēts!', e.message);
+        showError('Neizdevās ielādēt JSZip. Pārbaudi interneta savienojumu!');
+        return;
+    }
+    
     try {
         const configResponse = await fetch('/api/config');
         CONFIG = await configResponse.json();
