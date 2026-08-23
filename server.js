@@ -1,3 +1,5 @@
+// server.js
+
 // ============================================================
 // IMPORTS | IMPORTI
 // ============================================================
@@ -765,19 +767,22 @@ app.post('/api/prepare-backup', async (req, res) => {
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber, fileWinc, newUserCredits } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber, fileWinc, newUserCredits, encryptedZip, iv } = req.body;
         
         logSection('📤 EXECUTE BACKUP | IZPILDĪT BACKUPU');
         logInfo('Repo', repoName);
         logInfo('Mainītie faili | Changed files', files.length);
         logInfo('Token ID', tokenId);
         logInfo('Failu izmaksas | File costs', fileCostEth + ' ETH');
+        logInfo('Šifrēts ZIP | Encrypted ZIP', encryptedZip ? '✅ IR | YES' : '❌ NAV | NO');
+        logInfo('IV', iv ? Array.from(iv).length + ' baiti | bytes' : '❌ NAV | NO');
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs | files is not array' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
         if (fileCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav fileCostEth | Missing fileCostEth' });
+        if (!encryptedZip || !iv) return res.status(400).json({ success: false, error: 'Nav šifrēts ZIP vai IV | Missing encrypted ZIP or IV' });
         
         const provider = getProvider();
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
@@ -799,65 +804,23 @@ app.post('/api/execute-backup', async (req, res) => {
         const turbo = getTurbo();
         
         // ============================================================
-        // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
+        // 1. ŠIFRĒTĀ ZIP AUGŠUPIELĀDE | ENCRYPTED ZIP UPLOAD
         // ============================================================
         
-        logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
-        const zip = new JSZip();
+        logSection('📤 ŠIFRĒTĀ ZIP AUGŠUPIELĀDE | ENCRYPTED ZIP UPLOAD');
+        const encryptedZipBuffer = Buffer.from(encryptedZip);
+        logInfo('ZIP izmērs | ZIP size', encryptedZipBuffer.length + ' bytes');
         
-        for (const file of files) {
-            const fileBuffer = Buffer.from(file.content, 'base64');
-            zip.file(file.path, fileBuffer);
-            logInfo(`Pievienots | Added: ${file.path}`, fileBuffer.length + ' bytes');
-        }
-        
-        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
-        logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
-        
-        // ============================================================
-        // 2. ZIP APMAKSA | ZIP PAYMENT
-        // ============================================================
-        
-        const fileCostWei = ethers.parseEther(fileCostEth);
-        
-        logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
-        if (fileCostWei > 0n) {
-            logInfo('Summa | Amount', fileCostEth + ' ETH');
-            
-            const turboAddress = await getTurboPaymentAddress();
-            logInfo('Turbo adrese | Turbo address', turboAddress);
-            
-            const operatorWallet = getOperatorWallet(provider);
-            const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
-            const filePaymentId = ethers.id(repoName + '-zip-' + Date.now().toString());
-            const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId, turboAddress);
-            await filePayTx.wait();
-            
-            logSuccess('Transakcija | Transaction: ' + filePayTx.hash);
-            logInfo('Payment ID', filePaymentId);
-            logInfo('Destination', turboAddress);
-            
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            logSuccess('Gaidīšana pabeigta | Waiting completed (5s)');
-        } else {
-            logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
-        }
-        
-        // ============================================================
-        // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
-        // ============================================================
-        
-        logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
-            fileStreamFactory: () => Readable.from(zipBuffer),
-            fileSizeFactory: () => zipBuffer.length,
+            fileStreamFactory: () => Readable.from(encryptedZipBuffer),
+            fileSizeFactory: () => encryptedZipBuffer.length,
             dataItemOpts: {
                 tags: [
                     { name: 'App-Name', value: 'PermRepo' },
                     { name: 'Repo', value: repoName },
-                    { name: 'Type', value: 'backup-archive' },
-                    { name: 'Content-Type', value: 'application/zip' },
+                    { name: 'Type', value: 'backup-archive-encrypted' },
+                    { name: 'Content-Type', value: 'application/octet-stream' },
                     { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
                 ]
             }
@@ -867,7 +830,7 @@ app.post('/api/execute-backup', async (req, res) => {
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
         // ============================================================
-        // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        // 2. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
         // ============================================================
         
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
@@ -875,7 +838,7 @@ app.post('/api/execute-backup', async (req, res) => {
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
         // ============================================================
-        // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // 3. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
         // ============================================================
         
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
@@ -908,9 +871,14 @@ app.post('/api/execute-backup', async (req, res) => {
             manifest: 'arweave/paths',
             version: '0.2.0',
             index: { path: 'README.md' },
+            encryption: {
+                algorithm: 'AES-256-GCM',
+                iv: Array.from(iv)
+            },
             archive: {
                 id: zipResult.id,
                 url: `${ARWEAVE_GATEWAY}/raw/${zipResult.id}`,
+                encrypted: true,
                 contains: files.map(file => ({
                     path: file.path,
                     hash: file.hash
