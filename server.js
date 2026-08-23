@@ -601,39 +601,87 @@ app.post('/api/prepare-backup', async (req, res) => {
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         logInfo('Backup count', backupCount);
         
+        // ============================================================
+        // IEPRIEKŠĒJO MANIFESTU IEGŪŠANA | GET PREVIOUS MANIFESTS
+        // ============================================================
+        
         let previousPaths = {};
         let previousHistory = [];
         let previousManifestId = null;
         let previousBackupNumber = null;
         
         if (backupCount > 0) {
-            logSection('📜 IEPRIEKŠĒJAIS MANIFESTS | PREVIOUS MANIFEST');
+            logSection('📜 IEPRIEKŠĒJO MANIFESTU IEGŪŠANA | GET PREVIOUS MANIFESTS');
             const manifestURI = await nftContract.getManifestURI(tokenId);
             logInfo('URI', manifestURI);
             
             if (manifestURI && manifestURI.startsWith('ar://')) {
                 previousManifestId = manifestURI.slice(5);
-                logInfo('Manifest ID', previousManifestId);
+                logInfo('Pēdējais manifests | Last manifest', previousManifestId);
                 
                 try {
+                    // 1. Iegūstam pēdējo manifestu
                     const startTime = Date.now();
                     const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${previousManifestId}`);
                     const elapsed = Date.now() - startTime;
                     
                     if (manifestResponse.ok) {
                         const previousManifest = await manifestResponse.json();
-                        if (previousManifest.paths) previousPaths = previousManifest.paths;
-                        if (previousManifest.history) previousHistory = previousManifest.history;
-                        if (previousManifest.metadata && previousManifest.metadata.backupNumber) previousBackupNumber = previousManifest.metadata.backupNumber;
                         
-                        logInfo('Faili | Files', Object.keys(previousPaths).length);
+                        // 2. Apkopojam visus failus no pēdējā manifesta
+                        if (previousManifest.paths) {
+                            for (const [filePath, info] of Object.entries(previousManifest.paths)) {
+                                previousPaths[filePath] = info;
+                            }
+                        }
+                        
+                        // 3. Iegūstam history no pēdējā manifesta
+                        if (previousManifest.history) {
+                            previousHistory = previousManifest.history;
+                        }
+                        
+                        // 4. Iegūstam backup numuru
+                        if (previousManifest.metadata && previousManifest.metadata.backupNumber) {
+                            previousBackupNumber = previousManifest.metadata.backupNumber;
+                        }
+                        
+                        logInfo('Faili no pēdējā manifesta | Files from last manifest', Object.keys(previousPaths).length);
                         logInfo('Vēstures ieraksti | History entries', previousHistory.length);
                         logInfo('Lejupielādes laiks | Download time', elapsed + 'ms');
-                        logSuccess('Iepriekšējais manifests iegūts | Previous manifest obtained');
+                        logSuccess('Pēdējais manifests iegūts | Last manifest obtained');
                     }
                 } catch (e) {
-                    logWarning('Neizdevās iegūt iepriekšējo manifestu | Failed to get previous manifest: ' + errorMessage(e));
+                    logWarning('Neizdevās iegūt pēdējo manifestu | Failed to get last manifest: ' + errorMessage(e));
                 }
+                
+                // 5. Lejupielādējam visus iepriekšējos manifestus no history
+                for (const historyEntry of previousHistory) {
+                    try {
+                        const historyManifestId = historyEntry.manifestId;
+                        const historyResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${historyManifestId}`);
+                        
+                        if (historyResponse.ok) {
+                            const historyManifest = await historyResponse.json();
+                            
+                            // Pievienojam visus failus no šī manifesta
+                            if (historyManifest.paths) {
+                                for (const [filePath, info] of Object.entries(historyManifest.paths)) {
+                                    // Saglabājam tikai tos failus, kas nav jaunāki
+                                    if (!previousPaths[filePath]) {
+                                        previousPaths[filePath] = info;
+                                    }
+                                }
+                            }
+                            
+                            logInfo(`Backup #${historyEntry.backupNumber}: ${Object.keys(historyManifest.paths || {}).length} faili`);
+                        }
+                    } catch (e) {
+                        logWarning('Neizdevās iegūt history manifestu | Failed to get history manifest: ' + errorMessage(e));
+                    }
+                }
+                
+                // 6. Apkopojam visu failu skaitu
+                logInfo('Kopā faili no visiem backupiem | Total files from all backups', Object.keys(previousPaths).length);
             }
         }
         
