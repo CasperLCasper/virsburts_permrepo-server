@@ -326,7 +326,8 @@ app.get('/api/config', (req, res) => {
         registryAddress: REGISTRY_ADDRESS,
         rpcUrl: RPC_URL,
         arweaveGateway: ARWEAVE_GATEWAY,
-        turboToken: TURBO_TOKEN
+        turboToken: TURBO_TOKEN,
+        usdcAddress: process.env.USDC_ADDRESS // ✅ PIEVIENOTS
     });
 });
 
@@ -601,87 +602,39 @@ app.post('/api/prepare-backup', async (req, res) => {
         const backupCount = Number(await nftContract.getBackupCount(tokenId));
         logInfo('Backup count', backupCount);
         
-        // ============================================================
-        // IEPRIEKŠĒJO MANIFESTU IEGŪŠANA | GET PREVIOUS MANIFESTS
-        // ============================================================
-        
         let previousPaths = {};
         let previousHistory = [];
         let previousManifestId = null;
         let previousBackupNumber = null;
         
         if (backupCount > 0) {
-            logSection('📜 IEPRIEKŠĒJO MANIFESTU IEGŪŠANA | GET PREVIOUS MANIFESTS');
+            logSection('📜 IEPRIEKŠĒJAIS MANIFESTS | PREVIOUS MANIFEST');
             const manifestURI = await nftContract.getManifestURI(tokenId);
             logInfo('URI', manifestURI);
             
             if (manifestURI && manifestURI.startsWith('ar://')) {
                 previousManifestId = manifestURI.slice(5);
-                logInfo('Pēdējais manifests | Last manifest', previousManifestId);
+                logInfo('Manifest ID', previousManifestId);
                 
                 try {
-                    // 1. Iegūstam pēdējo manifestu
                     const startTime = Date.now();
                     const manifestResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${previousManifestId}`);
                     const elapsed = Date.now() - startTime;
                     
                     if (manifestResponse.ok) {
                         const previousManifest = await manifestResponse.json();
+                        if (previousManifest.paths) previousPaths = previousManifest.paths;
+                        if (previousManifest.history) previousHistory = previousManifest.history;
+                        if (previousManifest.metadata && previousManifest.metadata.backupNumber) previousBackupNumber = previousManifest.metadata.backupNumber;
                         
-                        // 2. Apkopojam visus failus no pēdējā manifesta
-                        if (previousManifest.paths) {
-                            for (const [filePath, info] of Object.entries(previousManifest.paths)) {
-                                previousPaths[filePath] = info;
-                            }
-                        }
-                        
-                        // 3. Iegūstam history no pēdējā manifesta
-                        if (previousManifest.history) {
-                            previousHistory = previousManifest.history;
-                        }
-                        
-                        // 4. Iegūstam backup numuru
-                        if (previousManifest.metadata && previousManifest.metadata.backupNumber) {
-                            previousBackupNumber = previousManifest.metadata.backupNumber;
-                        }
-                        
-                        logInfo('Faili no pēdējā manifesta | Files from last manifest', Object.keys(previousPaths).length);
+                        logInfo('Faili | Files', Object.keys(previousPaths).length);
                         logInfo('Vēstures ieraksti | History entries', previousHistory.length);
                         logInfo('Lejupielādes laiks | Download time', elapsed + 'ms');
-                        logSuccess('Pēdējais manifests iegūts | Last manifest obtained');
+                        logSuccess('Iepriekšējais manifests iegūts | Previous manifest obtained');
                     }
                 } catch (e) {
-                    logWarning('Neizdevās iegūt pēdējo manifestu | Failed to get last manifest: ' + errorMessage(e));
+                    logWarning('Neizdevās iegūt iepriekšējo manifestu | Failed to get previous manifest: ' + errorMessage(e));
                 }
-                
-                // 5. Lejupielādējam visus iepriekšējos manifestus no history
-                for (const historyEntry of previousHistory) {
-                    try {
-                        const historyManifestId = historyEntry.manifestId;
-                        const historyResponse = await fetch(`${ARWEAVE_GATEWAY}/raw/${historyManifestId}`);
-                        
-                        if (historyResponse.ok) {
-                            const historyManifest = await historyResponse.json();
-                            
-                            // Pievienojam visus failus no šī manifesta
-                            if (historyManifest.paths) {
-                                for (const [filePath, info] of Object.entries(historyManifest.paths)) {
-                                    // Saglabājam tikai tos failus, kas nav jaunāki
-                                    if (!previousPaths[filePath]) {
-                                        previousPaths[filePath] = info;
-                                    }
-                                }
-                            }
-                            
-                            logInfo(`Backup #${historyEntry.backupNumber}: ${Object.keys(historyManifest.paths || {}).length} faili`);
-                        }
-                    } catch (e) {
-                        logWarning('Neizdevās iegūt history manifestu | Failed to get history manifest: ' + errorMessage(e));
-                    }
-                }
-                
-                // 6. Apkopojam visu failu skaitu
-                logInfo('Kopā faili no visiem backupiem | Total files from all backups', Object.keys(previousPaths).length);
             }
         }
         
@@ -815,22 +768,19 @@ app.post('/api/prepare-backup', async (req, res) => {
 
 app.post('/api/execute-backup', async (req, res) => {
     try {
-        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber, fileWinc, newUserCredits, encryptedZip, iv } = req.body;
+        const { repoName, files, unchangedFiles, tokenId, fileCostEth, walletAddress, previousHistory, previousManifestId, previousBackupNumber, fileWinc, newUserCredits } = req.body;
         
         logSection('📤 EXECUTE BACKUP | IZPILDĪT BACKUPU');
         logInfo('Repo', repoName);
         logInfo('Mainītie faili | Changed files', files.length);
         logInfo('Token ID', tokenId);
         logInfo('Failu izmaksas | File costs', fileCostEth + ' ETH');
-        logInfo('Šifrēts ZIP | Encrypted ZIP', encryptedZip ? '✅ IR | YES' : '❌ NAV | NO');
-        logInfo('IV', iv ? Array.from(iv).length + ' baiti | bytes' : '❌ NAV | NO');
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
         if (!Array.isArray(files)) return res.status(400).json({ success: false, error: 'files nav masīvs | files is not array' });
         if (!tokenId) return res.status(400).json({ success: false, error: 'Nav tokenId | Missing tokenId' });
         if (fileCostEth === undefined) return res.status(400).json({ success: false, error: 'Nav fileCostEth | Missing fileCostEth' });
-        if (!encryptedZip || !iv) return res.status(400).json({ success: false, error: 'Nav šifrēts ZIP vai IV | Missing encrypted ZIP or IV' });
         
         const provider = getProvider();
         const nftContract = new ethers.Contract(NFT_ADDRESS, NFT_ABI, provider);
@@ -852,23 +802,65 @@ app.post('/api/execute-backup', async (req, res) => {
         const turbo = getTurbo();
         
         // ============================================================
-        // 1. ŠIFRĒTĀ ZIP AUGŠUPIELĀDE | ENCRYPTED ZIP UPLOAD
+        // 1. ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE
         // ============================================================
         
-        logSection('📤 ŠIFRĒTĀ ZIP AUGŠUPIELĀDE | ENCRYPTED ZIP UPLOAD');
-        const encryptedZipBuffer = Buffer.from(encryptedZip);
-        logInfo('ZIP izmērs | ZIP size', encryptedZipBuffer.length + ' bytes');
+        logSection('📦 ZIP ARHĪVA IZVEIDE | CREATE ZIP ARCHIVE');
+        const zip = new JSZip();
         
+        for (const file of files) {
+            const fileBuffer = Buffer.from(file.content, 'base64');
+            zip.file(file.path, fileBuffer);
+            logInfo(`Pievienots | Added: ${file.path}`, fileBuffer.length + ' bytes');
+        }
+        
+        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+        logInfo('ZIP izmērs | ZIP size', zipBuffer.length + ' bytes');
+        
+        // ============================================================
+        // 2. ZIP APMAKSA | ZIP PAYMENT
+        // ============================================================
+        
+        const fileCostWei = ethers.parseEther(fileCostEth);
+        
+        logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
+        if (fileCostWei > 0n) {
+            logInfo('Summa | Amount', fileCostEth + ' ETH');
+            
+            const turboAddress = await getTurboPaymentAddress();
+            logInfo('Turbo adrese | Turbo address', turboAddress);
+            
+            const operatorWallet = getOperatorWallet(provider);
+            const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
+            const filePaymentId = ethers.id(repoName + '-zip-' + Date.now().toString());
+            const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId, turboAddress);
+            await filePayTx.wait();
+            
+            logSuccess('Transakcija | Transaction: ' + filePayTx.hash);
+            logInfo('Payment ID', filePaymentId);
+            logInfo('Destination', turboAddress);
+            
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            logSuccess('Gaidīšana pabeigta | Waiting completed (5s)');
+        } else {
+            logSuccess('Izmanto lietotāja kredītus! | Using user credits!');
+        }
+        
+        // ============================================================
+        // 3. ZIP AUGŠUPIELĀDE | ZIP UPLOAD
+        // ============================================================
+        
+        logSection('📤 ZIP AUGŠUPIELĀDE | ZIP UPLOAD');
         const startUpload = Date.now();
         const zipResult = await turbo.uploadFile({
-            fileStreamFactory: () => Readable.from(encryptedZipBuffer),
-            fileSizeFactory: () => encryptedZipBuffer.length,
+            fileStreamFactory: () => Readable.from(zipBuffer),
+            fileSizeFactory: () => zipBuffer.length,
             dataItemOpts: {
                 tags: [
                     { name: 'App-Name', value: 'PermRepo' },
                     { name: 'Repo', value: repoName },
-                    { name: 'Type', value: 'backup-archive-encrypted' },
-                    { name: 'Content-Type', value: 'application/octet-stream' },
+                    { name: 'Type', value: 'backup-archive' },
+                    { name: 'Content-Type', value: 'application/zip' },
                     { name: 'Unix-Time', value: String(Math.floor(Date.now() / 1000)) }
                 ]
             }
@@ -878,7 +870,7 @@ app.post('/api/execute-backup', async (req, res) => {
         logSuccess(`ZIP TX ID: ${zipResult.id} (${uploadElapsed}ms)`);
         
         // ============================================================
-        // 2. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
+        // 4. ATJAUNINA LIETOTĀJA KREDĪTUS | UPDATE USER CREDITS
         // ============================================================
         
         logSection('💾 KREDĪTU ATJAUNINĀŠANA | CREDIT UPDATE');
@@ -886,7 +878,7 @@ app.post('/api/execute-backup', async (req, res) => {
         logSuccess('Lietotāja kredīti atjaunināti | User credits updated');
         
         // ============================================================
-        // 3. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
+        // 5. MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION
         // ============================================================
         
         logSection('📄 MANIFESTA SAGATAVOŠANA | MANIFEST PREPARATION');
@@ -919,14 +911,9 @@ app.post('/api/execute-backup', async (req, res) => {
             manifest: 'arweave/paths',
             version: '0.2.0',
             index: { path: 'README.md' },
-            encryption: {
-                algorithm: 'AES-256-GCM',
-                iv: Array.from(iv)
-            },
             archive: {
                 id: zipResult.id,
                 url: `${ARWEAVE_GATEWAY}/raw/${zipResult.id}`,
-                encrypted: true,
                 contains: files.map(file => ({
                     path: file.path,
                     hash: file.hash
