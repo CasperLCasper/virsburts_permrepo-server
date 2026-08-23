@@ -134,7 +134,7 @@
             
             try {
                 const provider = new ethers.BrowserProvider(window.ethereum);
-                const signer = await provider.getSigner();
+                signer = await provider.getSigner();
                 userAddress = await signer.getAddress();
                 
                 document.getElementById('walletStatus').textContent = userAddress.substring(0, 10) + '...';
