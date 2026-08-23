@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PermRepo — Decentralizēta atjaunošana</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .container { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 40px; max-width: 640px; width: 100%; }
+        h1 { text-align: center; color: #79c0ff; margin-bottom: 8px; font-size: 24px; }
+        .subtitle { text-align: center; color: #b0b8c4; margin-bottom: 24px; font-size: 14px; }
+        .info-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #21262d; }
+        .info-label { color: #b0b8c4; }
+        .info-value { font-weight: 600; font-size: 14px; word-break: break-all; }
+        input { width: 100%; padding: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #e6edf3; font-size: 16px; margin-top: 8px; margin-bottom: 16px; }
+        input:focus { outline: none; border-color: #58a6ff; }
+        button { width: 100%; padding: 14px; background: #238636; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 12px; transition: background 0.2s; }
+        button:hover { background: #2ea043; }
+        button:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+        .progress { width: 100%; height: 20px; background: #21262d; border-radius: 10px; margin: 16px 0; overflow: hidden; display: none; }
+        .progress-bar { height: 100%; background: #238636; transition: width 0.3s; }
+        .status { text-align: center; margin-top: 16px; font-size: 14px; color: #b0b8c4; white-space: pre-wrap; word-break: break-all; }
+        .error { color: #f85149; margin-top: 12px; text-align: center; font-size: 14px; }
+        .success { color: #3fb950; margin-top: 12px; text-align: center; font-size: 14px; }
+        .debug-info { margin: 12px 0; padding: 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; font-size: 12px; max-height: 200px; overflow-y: auto; display: none; color: #8b949e; }
+        a { color: #79c0ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔓 PermRepo Atjaunošana</h1>
+        <p class="subtitle">Atjauno pilnu repozitoriju no Arweave — bez servera!</p>
+        
+        <div class="info-row">
+            <span class="info-label">Arweave manifests (TX ID vai ar://)</span>
+        </div>
+        <input type="text" id="manifestInput" placeholder="Piem.: ar://ABC123... vai https://ar-io.dev/raw/ABC123...">
+        
+        <div class="info-row">
+            <span class="info-label">Savienotais maks</span>
+            <span class="info-value" id="walletStatus">Nav savienots</span>
+        </div>
+        <button id="connectWalletBtn" onclick="connectWallet()">🔌 Savienot MetaMask</button>
+        
+        <button id="restoreBtn" onclick="restoreRepo()" disabled>📥 Atjaunot repozitoriju</button>
+        
+        <div class="progress" id="progress">
+            <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+        </div>
+        
+        <div id="status" class="status"></div>
+        <div id="debugInfo" class="debug-info"></div>
+    </div>
+
+    <!-- JSZip no CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    
+    <!-- Ethers no CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+    
+    <script>
+        const { ethers } = window;
+        
+        // Arweave vārtejas (gateways)
+        const GATEWAYS = [
+            'https://ar-io.dev',
+            'https://arweave.net'
+        ];
+        
+        let userAddress = null;
+        let signer = null;
+        
+        // ============================================================
+        // PALĪGFUNKCIJAS | HELPERS
+        // ============================================================
+        
+        function showStatus(msg, type = 'status') {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = type;
+        }
+        
+        function showDebug(msg) {
+            const el = document.getElementById('debugInfo');
+            el.style.display = 'block';
+            el.innerHTML += msg + '<br>';
+            el.scrollTop = el.scrollHeight;
+        }
+        
+        function showProgress(percent) {
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('progressBar').style.width = percent + '%';
+        }
+        
+        function hideProgress() {
+            document.getElementById('progress').style.display = 'none';
+        }
+        
+        async function fetchFromArweave(txId, gatewayIndex = 0) {
+            if (gatewayIndex >= GATEWAYS.length) {
+                throw new Error('Neizdevās lejupielādēt no Arweave');
+            }
+            
+            const gateway = GATEWAYS[gatewayIndex];
+            
+            try {
+                showDebug(`Mēģina: ${gateway}/raw/${txId}`);
+                const response = await fetch(`${gateway}/raw/${txId}`);
+                
+                if (response.ok) {
+                    showDebug(`✅ Veiksmīgi: ${gateway}/raw/${txId} (${response.status})`);
+                    return await response.arrayBuffer();
+                } else {
+                    showDebug(`❌ ${gateway} atbilde: ${response.status}`);
+                }
+            } catch (e) {
+                showDebug(`❌ ${gateway} kļūda: ${e.message}`);
+            }
+            
+            return fetchFromArweave(txId, gatewayIndex + 1);
+        }
+        
+        // ============================================================
+        // METAMASK SAVIENOŠANA | METAMASK CONNECT
+        // ============================================================
+        
+        async function connectWallet() {
+            if (!window.ethereum) {
+                showStatus('❌ Lūdzu instalē MetaMask!', 'error');
+                return;
+            }
+            
+            try {
+                const provider = new ethers.BrowserProvider(window.ethereum);
+                signer = await provider.getSigner();
+                userAddress = await signer.getAddress();
+                
+                document.getElementById('walletStatus').textContent = userAddress.substring(0, 10) + '...';
+                document.getElementById('restoreBtn').disabled = false;
+                
+                showStatus('✅ Maks savienots!', 'success');
+            } catch (e) {
+                showStatus('❌ Kļūda savienojot: ' + e.message, 'error');
+            }
+        }
+        
+        // ============================================================
+        // ŠIFRĒŠANAS ATSLĒGAS ATVASINĀŠANA | DERIVE ENCRYPTION KEY
+        // ============================================================
+        
+        async function getEncryptionKey() {
+            if (!signer || !userAddress) {
+                throw new Error('Nav savienots maks!');
+            }
+            
+            // 1. Izsaucam MetaMask parakstīšanu (standarta pieeja)
+            const message = 'PermRepo šifrēšanas atslēga';
+            const signature = await signer.signMessage(message);
+            
+            // 2. Atvasinām AES-256 atslēgu no paraksta
+            const key = ethers.keccak256(ethers.toUtf8Bytes(signature));
+            return key;
+        }
+        
+        // ============================================================
+        // ATSLĒGAS PĀRVEIDE UZ CryptoKey | CONVERT KEY TO CryptoKey
+        // ============================================================
+        
+        async function getCryptoKey(keyHex) {
+            const key = keyHex.slice(2); // Noņemam "0x" prefiksu
+            const keyBytes = new Uint8Array(32);
+            for (let i = 0; i < 32; i++) {
+                keyBytes[i] = parseInt(key.substring(i * 2, i * 2 + 2), 16);
+            }
+            
+            return await crypto.subtle.importKey(
+                'raw', keyBytes, 'AES-GCM', false, ['decrypt']
+            );
+        }
+        
+        // ============================================================
+        // ATSIFRĒŠANA | DECRYPT
+        // ============================================================
+        
+        async function decryptData(encryptedData, iv, keyHex) {
+            const cryptoKey = await getCryptoKey(keyHex);
+            const ivBytes = new Uint8Array(iv);
+            const dataBytes = new Uint8Array(encryptedData);
+            
+            const decrypted = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: ivBytes },
+                cryptoKey,
+                dataBytes
+            );
+            
+            return new Uint8Array(decrypted);
+        }
+        
+        // ============================================================
+        // ATJAUNOŠANA | RESTORE
+        // ============================================================
+        
+        async function restoreRepo() {
+            const manifestInput = document.getElementById('manifestInput').value.trim();
+            
+            if (!manifestInput) {
+                showStatus('❌ Ievadi manifesta TX ID vai ar:// saiti!', 'error');
+                return;
+            }
+            
+            if (!signer) {
+                showStatus('❌ Vispirms savieno MetaMask!', 'error');
+                return;
+            }
+            
+            // 1. Izgūstam manifesta TX ID no ievades
+            let manifestTxId = manifestInput;
+            if (manifestInput.startsWith('ar://')) {
+                manifestTxId = manifestInput.slice(5);
+            } else if (manifestInput.includes('/raw/')) {
+                manifestTxId = manifestInput.split('/raw/')[1];
+            } else if (manifestInput.includes('ar-io.dev/')) {
+                manifestTxId = manifestInput.split('ar-io.dev/')[1];
+            } else if (manifestInput.includes('arweave.net/')) {
+                manifestTxId = manifestInput.split('arweave.net/')[1];
+            }
+            
+            const button = document.getElementById('restoreBtn');
+            button.disabled = true;
+            button.textContent = '⏳ Atjauno...';
+            
+            document.getElementById('debugInfo').innerHTML = '';
+            document.getElementById('debugInfo').style.display = 'none';
+            
+            try {
+                // 2. Atvasinām atslēgu no MetaMask
+                showStatus('🔑 Atvasinām atslēgu...', 'status');
+                const encryptionKey = await getEncryptionKey();
+                showDebug('Atslēga iegūta');
+                
+                // 3. Lejupielādējam manifestu
+                showStatus('📥 Lejupielādējam manifestu...', 'status');
+                showProgress(5);
+                
+                const manifestBuffer = await fetchFromArweave(manifestTxId);
+                const manifestText = new TextDecoder().decode(manifestBuffer);
+                showDebug('Manifests (pirmie 500 simboli): ' + manifestText.substring(0, 500));
+                
+                const manifest = JSON.parse(manifestText);
+                
+                if (!manifest.paths || !manifest.history) {
+                    throw new Error('Nederīgs manifests! Nav paths vai history.');
+                }
+                
+                showDebug('Failu skaits: ' + Object.keys(manifest.paths).length);
+                showDebug('Backupu skaits: ' + manifest.history.length);
+                
+                // 4. Iegūstam visus backupus (no history + pašreizējais)
+                const allBackups = [
+                    {
+                        backupNumber: manifest.metadata?.backupNumber || 1,
+                        manifestId: manifestTxId,
+                        paths: manifest.paths
+                    },
+                    ...manifest.history.map(h => ({
+                        backupNumber: h.backupNumber,
+                        manifestId: h.manifestId,
+                        paths: null // Mēs to ielādēsim vēlāk
+                    }))
+                ];
+                
+                // 5. Lejupielādējam visus vecos manifestus, lai iegūtu paths
+                showStatus('🔍 Lejupielādējam visus backupu manifestus...', 'status');
+                showProgress(15);
+                
+                for (let i = 0; i < allBackups.length; i++) {
+                    const backup = allBackups[i];
+                    if (!backup.paths) {
+                        try {
+                            const backupManifestBuffer = await fetchFromArweave(backup.manifestId);
+                            const backupManifestText = new TextDecoder().decode(backupManifestBuffer);
+                            const backupManifest = JSON.parse(backupManifestText);
+                            backup.paths = backupManifest.paths;
+                            showDebug(`Backup #${backup.backupNumber}: ${Object.keys(backup.paths).length} faili`);
+                        } catch (e) {
+                            showDebug(`❌ Neizdevās iegūt backup #${backup.backupNumber}: ${e.message}`);
+                        }
+                    }
+                }
+                
+                // 6. Apvienojam visus failus (ņemot vērā jaunāko versiju)
+                showStatus('🔄 Apvienojam failus no visiem backupiem...', 'status');
+                showProgress(30);
+                
+                const allPaths = {};
+                const backupNumbers = {};
+                
+                // Vispirms apvienojam no visiem manifestiem
+                for (const backup of allBackups) {
+                    for (const [filePath, info] of Object.entries(backup.paths || {})) {
+                        if (!allPaths[filePath] || backup.backupNumber > backupNumbers[filePath]) {
+                            allPaths[filePath] = info;
+                            backupNumbers[filePath] = backup.backupNumber;
+                        }
+                    }
+                }
+                
+                // 7. Iegūstam visus unikālos ZIP ID
+                const zipIds = new Set();
+                for (const [path, info] of Object.entries(allPaths)) {
+                    if (info.zipId) {
+                        zipIds.add(info.zipId);
+                    } else if (info.id) {
+                        zipIds.add(info.id);
+                    }
+                }
+                
+                showDebug('Unikālie ZIP faili: ' + [...zipIds].join(', '));
+                
+                // 8. Lejupielādējam un izpakojam visus ZIP failus
+                showStatus(`📦 Lejupielādējam ${zipIds.size} arhīvus...`, 'status');
+                showProgress(40);
+                
+                const zipContents = {};
+                let downloadedCount = 0;
+                
+                for (const zipId of zipIds) {
+                    try {
+                        const zipBuffer = await fetchFromArweave(zipId);
+                        
+                        // Atšifrējam ZIP failu, izmantojot IV no manifesta
+                        const iv = manifest.encryption?.iv || [];
+                        const decryptedZipBuffer = await decryptData(zipBuffer, iv, encryptionKey);
+                        
+                        zipContents[zipId] = await JSZip.loadAsync(decryptedZipBuffer);
+                        showDebug(`✅ ZIP izpakots (atšifrēts): ${zipId}`);
+                    } catch (e) {
+                        showDebug(`❌ Neizdevās izpakot ${zipId}: ${e.message}`);
+                    }
+                    
+                    downloadedCount++;
+                    showProgress(40 + (downloadedCount / zipIds.size) * 30);
+                }
+                
+                // 9. Izvelkam visus failus no ZIP failiem
+                showStatus('📂 Izvelkam failus...', 'status');
+                showProgress(75);
+                
+                const finalFiles = {};
+                
+                for (const [filePath, info] of Object.entries(allPaths)) {
+                    const zipId = info.zipId || info.id;
+                    const zip = zipContents[zipId];
+                    
+                    if (zip) {
+                        let fileData = null;
+                        
+                        // Mēģinām atrast failu pēc ceļa
+                        if (zip.file(filePath)) {
+                            fileData = await zip.file(filePath).async('uint8array');
+                            showDebug(`✅ Atjaunots: ${filePath}`);
+                        } else {
+                            // Mēģinām atrast pēc faila nosaukuma
+                            const fileName = filePath.split('/').pop();
+                            const matchingFile = Object.values(zip.files).find(f => 
+                                f.name === fileName || f.name.endsWith('/' + fileName)
+                            );
+                            
+                            if (matchingFile) {
+                                fileData = await matchingFile.async('uint8array');
+                                showDebug(`✅ Atjaunots (pēc nosaukuma): ${filePath}`);
+                            } else {
+                                showDebug(`❌ Nav atrasts ZIP: ${filePath}`);
+                            }
+                        }
+                        
+                        if (fileData) {
+                            finalFiles[filePath] = fileData;
+                        }
+                    }
+                }
+                
+                // 10. Izveidojam galīgo ZIP failu
+                showStatus(`📦 Veidojam ZIP ar ${Object.keys(finalFiles).length} failiem...`, 'status');
+                showProgress(90);
+                
+                const finalZip = new JSZip();
+                for (const [filePath, data] of Object.entries(finalFiles)) {
+                    finalZip.file(filePath, data);
+                }
+                
+                const finalBlob = await finalZip.generateAsync({ type: 'blob' });
+                
+                // 11. Lejupielādējam
+                showProgress(100);
+                
+                const url = URL.createObjectURL(finalBlob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${manifest.metadata?.repo || 'repo'}-atjaunots.zip`;
+                a.click();
+                URL.revokeObjectURL(url);
+                
+                hideProgress();
+                showStatus(`✅ Repozitorijs atjaunots!\nFaili: ${Object.keys(finalFiles).length}`, 'success');
+                
+            } catch (e) {
+                console.error('Kļūda:', e);
+                hideProgress();
+                showStatus('❌ Kļūda: ' + e.message, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = '📥 Atjaunot repozitoriju';
+            }
+        }
+        
+        // Automātiski aizpilda no URL parametra
+        window.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const manifestParam = urlParams.get('manifest');
+            if (manifestParam) {
+                document.getElementById('manifestInput').value = manifestParam;
+            }
+        });
+    </script>
+</body>
+</html>
