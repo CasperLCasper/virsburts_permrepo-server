@@ -10,9 +10,11 @@ import { fileURLToPath } from 'url';
 import { ethers } from 'ethers';
 import crypto from 'crypto';
 import session from 'express-session';
+import RedisStore from 'connect-redis';
+import Redis from 'ioredis';
 import { Readable } from 'stream';
 import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
-import { Redis } from '@upstash/redis';
+import { Redis as UpstashRedis } from '@upstash/redis';
 import JSZip from 'jszip';
 
 import { checkAllServices } from './healthChecks.js';
@@ -61,11 +63,18 @@ const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const HEALTH_CHECKS_ENABLED = process.env.HEALTH_CHECKS_ENABLED === 'true';
 
 // ============================================================
-// REDIS | REDIS
+// REDIS (SESSION UN KREDĪTIEM) | REDIS (FOR SESSION & CREDITS)
 // ============================================================
 
-const redis = (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN)
-    ? new Redis({
+// 1. IORedis klientam (sesijām un TCP savienojumam) – izmantojam Upstash REST URL, bet TCP režīmā
+const redisClient = new Redis(process.env.UPSTASH_REDIS_REST_URL, {
+    tls: {},
+    maxRetriesPerRequest: null,
+});
+
+// 2. Upstash Redis REST klients (kredītu glabāšanai) – izmanto REST API
+const upstashRedis = (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN)
+    ? new UpstashRedis({
         url: UPSTASH_REDIS_REST_URL,
         token: UPSTASH_REDIS_REST_TOKEN,
     })
@@ -131,7 +140,9 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// SESIJU IESTATĪŠANA AR REDIS (NOMAINĪTS NO MemoryStore)
 app.use(session({
+    store: new RedisStore({ client: redisClient }),
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: true,
@@ -192,10 +203,10 @@ function getRepositoryHash(repoName) {
 // ============================================================
 
 async function getUserCredits(walletAddress) {
-    if (!redis) return 0n;
+    if (!upstashRedis) return 0n;
     
     try {
-        const credits = await redis.get(`user:${walletAddress.toLowerCase()}:winc`);
+        const credits = await upstashRedis.get(`user:${walletAddress.toLowerCase()}:winc`);
         return BigInt(String(credits || '0'));
     } catch (e) {
         logWarning('Redis get kļūda | Redis get error: ' + errorMessage(e));
@@ -204,10 +215,10 @@ async function getUserCredits(walletAddress) {
 }
 
 async function setUserCredits(walletAddress, wincAmount) {
-    if (!redis) return;
+    if (!upstashRedis) return;
     
     try {
-        await redis.set(`user:${walletAddress.toLowerCase()}:winc`, wincAmount.toString());
+        await upstashRedis.set(`user:${walletAddress.toLowerCase()}:winc`, wincAmount.toString());
         logInfo('Lietotāja kredīti | User credits', `${wincAmount} winc`);
     } catch (e) {
         logWarning('Redis set kļūda | Redis set error: ' + errorMessage(e));
@@ -529,7 +540,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
             
             const healthParams = {
-                redis,
+                redis: upstashRedis,
                 rpcUrl: RPC_URL,
                 operatorPrivateKey: OPERATOR_PRIVATE_KEY,
                 treasuryAddress: TREASURY_ADDRESS,
@@ -1228,7 +1239,7 @@ app.get('/api/health', (req, res) => {
             subscription: !!SUBSCRIPTION_ADDRESS,
             registry: !!REGISTRY_ADDRESS,
             githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET && GITHUB_REDIRECT_URI),
-            redis: !!redis
+            redis: !!redisClient
         }
     });
 });
@@ -1257,6 +1268,6 @@ app.listen(PORT, () => {
     logInfo('TURBO_TOKEN', TURBO_TOKEN);
     logInfo('TURBO_UPLOAD_URL', TURBO_UPLOAD_URL);
     logInfo('TURBO_PAYMENT_URL', TURBO_PAYMENT_URL);
-    logInfo('REDIS', redis ? '✅ IR | YES' : '❌ NAV | NO');
+    logInfo('REDIS', redisClient ? '✅ IR | YES' : '❌ NAV | NO');
     console.log('='.repeat(60) + '\n');
 });
