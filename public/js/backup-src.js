@@ -2,6 +2,7 @@
 // Priekšpuses loģika backupu un atjaunošanai.
 
 const { ethers } = window;
+const JSZip = window.JSZip; // ✅ Iegūstam JSZip no globālā (CDN)
 
 let CONFIG = {};
 let userAddress = null;
