@@ -91,22 +91,6 @@ function logWarning(message) {
 }
 
 // ============================================================
-// CORS TIKAI API CEĻIEM | CORS ONLY FOR API ROUTES
-// ============================================================
-
-app.use('/api', (req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(204);
-    }
-    
-    next();
-});
-
-// ============================================================
 // DROŠĪBAS GALVENES | SECURITY HEADERS
 // ============================================================
 
