@@ -91,29 +91,32 @@ function logWarning(message) {
 }
 
 // ============================================================
+// CORS IESTATĪJUMI | CORS CONFIGURATION
+// ============================================================
+
+app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(204);
+    }
+    
+    next();
+});
+
+// ============================================================
 // DROŠĪBAS GALVENES | SECURITY HEADERS
 // ============================================================
 
 app.use((req, res, next) => {
-    // Content Security Policy
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; img-src 'self' data: https:; connect-src 'self' https://ar-io.dev https://arweave.net; font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; frame-ancestors 'none';");
-    
-    // Strict Transport Security
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-    
-    // X-Content-Type-Options
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    
-    // X-Frame-Options
     res.setHeader('X-Frame-Options', 'DENY');
-    
-    // Referrer-Policy
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    
-    // Permissions-Policy
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-    
-    // X-XSS-Protection
     res.setHeader('X-XSS-Protection', '1; mode=block');
     
     // Sīkdatņu drošība | Cookie security
