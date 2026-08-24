@@ -112,9 +112,8 @@ const REGISTRY_ABI = [
 ];
 
 const TREASURY_ABI = [
-    "function payTurbo(address user, uint256 amount, bytes32 paymentId, address payable destination) external",
-    "function balance() external view returns (uint256)",
-    "function getUserDeposit(address user) external view returns (uint256)"
+    "function payTurbo(uint256 amount, bytes32 paymentId, address payable destination) external",
+    "function balance() external view returns (uint256)"
 ];
 
 // ============================================================
@@ -800,7 +799,7 @@ app.post('/api/execute-backup', async (req, res) => {
             const operatorWallet = getOperatorWallet(provider);
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
             const filePaymentId = ethers.id(repoName + '-zip-' + Date.now().toString());
-            const filePayTx = await treasuryWrite.payTurbo(walletAddress, fileCostWei, filePaymentId, turboAddress);
+            const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId, turboAddress);
             await filePayTx.wait();
             
             logSuccess('Transakcija | Transaction: ' + filePayTx.hash);
@@ -1003,7 +1002,7 @@ app.post('/api/finalize-backup', async (req, res) => {
             const operatorWallet = getOperatorWallet(provider);
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
             const manifestPaymentId = ethers.id(repoName + '-manifest-' + Date.now().toString());
-            const manifestPayTx = await treasuryWrite.payTurbo(walletAddress, manifestCostWei, manifestPaymentId, turboAddress);
+            const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId, turboAddress);
             await manifestPayTx.wait();
             
             logSuccess('Transakcija | Transaction: ' + manifestPayTx.hash);
