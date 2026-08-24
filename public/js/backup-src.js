@@ -341,20 +341,21 @@ async function executeZipUpload() {
             const balance = await treasuryContract.balance();
             const fileCostWei = ethers.parseEther(currentFileCostEth);
             
-            // ✅ LIETOTĀJS VIENMĒR IEMAKSĀ
-            setStatus('Iemaksājam Treasury par ZIP...');
-            button.textContent = '⏳ Iemaksā...';
-            
-            const tx = await signer.sendTransaction({
-                to: CONFIG.treasuryAddress,
-                value: fileCostWei
-            });
-            
-            setStatus('Gaida iemaksas apstiprinājumu...');
-            button.textContent = '⏳ Gaida...';
-            await tx.wait();
-            
-            setStatus('✅ Iemaksa veiksmīga!');
+            if (balance < fileCostWei) {
+                setStatus('Iemaksājam Treasury par ZIP...');
+                button.textContent = '⏳ Iemaksā...';
+                
+                const tx = await signer.sendTransaction({
+                    to: CONFIG.treasuryAddress,
+                    value: fileCostWei
+                });
+                
+                setStatus('Gaida iemaksas apstiprinājumu...');
+                button.textContent = '⏳ Gaida...';
+                await tx.wait();
+                
+                setStatus('✅ Iemaksa veiksmīga!');
+            }
             
             hasDepositedFiles = true;
         }
@@ -451,20 +452,21 @@ async function finalizeBackup() {
             const balance = await treasuryContract.balance();
             const manifestCostWei = ethers.parseEther(currentManifestCostEth);
             
-            // ✅ LIETOTĀJS VIENMĒR IEMAKSĀ
-            setStatus('Iemaksājam Treasury par manifestu...');
-            button.textContent = '⏳ Iemaksā...';
-            
-            const tx = await signer.sendTransaction({
-                to: CONFIG.treasuryAddress,
-                value: manifestCostWei
-            });
-            
-            setStatus('Gaida iemaksas apstiprinājumu...');
-            button.textContent = '⏳ Gaida...';
-            await tx.wait();
-            
-            setStatus('✅ Iemaksa veiksmīga!');
+            if (balance < manifestCostWei) {
+                setStatus('Iemaksājam Treasury par manifestu...');
+                button.textContent = '⏳ Iemaksā...';
+                
+                const tx = await signer.sendTransaction({
+                    to: CONFIG.treasuryAddress,
+                    value: manifestCostWei
+                });
+                
+                setStatus('Gaida iemaksas apstiprinājumu...');
+                button.textContent = '⏳ Gaida...';
+                await tx.wait();
+                
+                setStatus('✅ Iemaksa veiksmīga!');
+            }
             
             hasDepositedManifest = true;
         }
