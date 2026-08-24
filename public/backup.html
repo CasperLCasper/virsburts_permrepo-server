@@ -5,27 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PermRepo — Backups</title>
     <link rel="stylesheet" href="css/style.css">
-    
-    <!-- Ethers.js ar SRI -->
-    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js" 
-            integrity="sha512-f+t6//rz3Iy3hp1CiwtsigYtyWuGk7bf6xl2RTOPvmyMIfTQJ4iy6Lg1dah1bsLQ9SLideJGicgmOkBsBXP1aA==" 
-            crossorigin="anonymous"></script>
-    
-    <!-- JSZip ar SRI -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" 
-            integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" 
-            crossorigin="anonymous"></script>
 </head>
 <body>
 <div class="container">
     <h1>🔒 PermRepo Backups</h1>
     <p class="subtitle">Izvēlies repozitoriju un sāc backupu uz Arweave</p>
     
-    <div id="authSection" class="hidden">
+    <div id="authSection" style="display: none;">
         <button id="loginButton" class="sign-button">Savienot ar GitHub</button>
     </div>
     
-    <div id="userSection" class="hidden">
+    <div id="userSection" style="display: none;">
         <div class="info-row text-left">
             <span class="info-label">Lietotājs</span>
             <span class="info-value" id="userName">-</span>
@@ -33,7 +23,7 @@
         <button id="logoutButton" class="logout-button">Izrakstīties</button>
     </div>
     
-    <div id="repoSection" class="hidden">
+    <div id="repoSection" style="display: none;">
         <div class="info-row text-left">
             <span class="info-label">Repozitorijs</span>
             <select id="repoSelect">
@@ -42,7 +32,7 @@
         </div>
     </div>
     
-    <div id="walletSection" class="hidden">
+    <div id="walletSection" style="display: none;">
         <div class="info-row text-left">
             <span class="info-label">Maka adrese</span>
             <input type="text" id="walletInput" placeholder="0x..." readonly>
@@ -50,18 +40,19 @@
         <button id="connectWalletButton" class="sign-button">Savienot maku</button>
     </div>
     
-    <div id="statusSection" class="hidden">
+    <div id="statusSection" style="display: none;">
         <div class="status" id="nftStatus"></div>
         <div class="status" id="subscriptionStatus"></div>
     </div>
     
-    <button id="backupButton" class="sign-button hidden" disabled>
+    <button id="backupButton" class="sign-button" style="display: none;" disabled>
         Sākt backupu
     </button>
     
     <div class="status" id="status"></div>
     <div class="error" id="error"></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 <script type="module" src="js/backup-src.js"></script>
 </body>
 </html>
