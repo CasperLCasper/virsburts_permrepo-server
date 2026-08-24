@@ -12,11 +12,11 @@ import crypto from 'crypto';
 import session from 'express-session';
 import { Readable } from 'stream';
 import { TurboFactory, EthereumSigner } from '@ardrive/turbo-sdk';
-import { Redis } from '@upstash/redis';
 import JSZip from 'jszip';
 
 import { checkAllServices } from './healthChecks.js';
 import { submitBackupWithMerkle } from './merkle.js';
+import { initRedis, getUserCredits, setUserCredits, getUserDeposits, setUserDeposits } from './accounting-redis.js';
 
 // ============================================================
 // PATHS | CEĻI
@@ -51,8 +51,6 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const TURBO_TOKEN = process.env.TURBO_TOKEN || 'base-eth';
 const TURBO_UPLOAD_URL = process.env.TURBO_UPLOAD_URL || 'https://upload.services.ar-io.dev';
 const TURBO_PAYMENT_URL = process.env.TURBO_PAYMENT_URL || 'https://payment.services.ar-io.dev';
-const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 // ============================================================
 // HEALTH CHECKS TOGGLE | VESELĪBAS PĀRBAUŽU SLĒDZIS
@@ -61,15 +59,10 @@ const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const HEALTH_CHECKS_ENABLED = process.env.HEALTH_CHECKS_ENABLED === 'true';
 
 // ============================================================
-// REDIS | REDIS
+// REDIS INICIALIZĀCIJA | REDIS INITIALIZATION
 // ============================================================
 
-const redis = (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN)
-    ? new Redis({
-        url: UPSTASH_REDIS_REST_URL,
-        token: UPSTASH_REDIS_REST_TOKEN,
-    })
-    : null;
+initRedis();
 
 // ============================================================
 // LOGGING HELPERS | LOGĒŠANAS PALĪGFUNKCIJAS
@@ -119,8 +112,9 @@ const REGISTRY_ABI = [
 ];
 
 const TREASURY_ABI = [
-    "function payTurbo(uint256 amount, bytes32 paymentId, address payable destination) external",
-    "function balance() external view returns (uint256)"
+    "function payTurbo(address user, uint256 amount, bytes32 paymentId, address payable destination) external",
+    "function balance() external view returns (uint256)",
+    "function getUserDeposit(address user) external view returns (uint256)"
 ];
 
 // ============================================================
@@ -185,33 +179,6 @@ function errorMessage(error) {
 
 function getRepositoryHash(repoName) {
     return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['string'], [repoName]));
-}
-
-// ============================================================
-// REDIS HELPERS | REDIS PALĪGFUNKCIJAS
-// ============================================================
-
-async function getUserCredits(walletAddress) {
-    if (!redis) return 0n;
-    
-    try {
-        const credits = await redis.get(`user:${walletAddress.toLowerCase()}:winc`);
-        return BigInt(String(credits || '0'));
-    } catch (e) {
-        logWarning('Redis get kļūda | Redis get error: ' + errorMessage(e));
-        return 0n;
-    }
-}
-
-async function setUserCredits(walletAddress, wincAmount) {
-    if (!redis) return;
-    
-    try {
-        await redis.set(`user:${walletAddress.toLowerCase()}:winc`, wincAmount.toString());
-        logInfo('Lietotāja kredīti | User credits', `${wincAmount} winc`);
-    } catch (e) {
-        logWarning('Redis set kļūda | Redis set error: ' + errorMessage(e));
-    }
 }
 
 // ============================================================
@@ -530,7 +497,7 @@ app.post('/api/prepare-backup', async (req, res) => {
             logSection('🩺 KRITISKO SERVISU KOMBINĒTĀ PĀRBAUDE');
             
             const healthParams = {
-                redis,
+                redis: getRedis(),
                 rpcUrl: RPC_URL,
                 operatorPrivateKey: OPERATOR_PRIVATE_KEY,
                 treasuryAddress: TREASURY_ADDRESS,
@@ -833,7 +800,7 @@ app.post('/api/execute-backup', async (req, res) => {
             const operatorWallet = getOperatorWallet(provider);
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
             const filePaymentId = ethers.id(repoName + '-zip-' + Date.now().toString());
-            const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId, turboAddress);
+            const filePayTx = await treasuryWrite.payTurbo(walletAddress, fileCostWei, filePaymentId, turboAddress);
             await filePayTx.wait();
             
             logSuccess('Transakcija | Transaction: ' + filePayTx.hash);
@@ -1036,7 +1003,7 @@ app.post('/api/finalize-backup', async (req, res) => {
             const operatorWallet = getOperatorWallet(provider);
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
             const manifestPaymentId = ethers.id(repoName + '-manifest-' + Date.now().toString());
-            const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId, turboAddress);
+            const manifestPayTx = await treasuryWrite.payTurbo(walletAddress, manifestCostWei, manifestPaymentId, turboAddress);
             await manifestPayTx.wait();
             
             logSuccess('Transakcija | Transaction: ' + manifestPayTx.hash);
