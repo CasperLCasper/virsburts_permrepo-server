@@ -16,7 +16,7 @@ import JSZip from 'jszip';
 
 import { checkAllServices } from './healthChecks.js';
 import { submitBackupWithMerkle } from './merkle.js';
-import { initRedis, getUserCredits, setUserCredits, getUserDeposits, setUserDeposits } from './accounting-redis.js';
+import { initRedis, getUserCredits, setUserCredits, getUserDeposits, setUserDeposits, getRedis } from './accounting-redis.js';
 
 // ============================================================
 // PATHS | CEĻI
@@ -1182,7 +1182,7 @@ app.get('/api/health', (req, res) => {
             subscription: !!SUBSCRIPTION_ADDRESS,
             registry: !!REGISTRY_ADDRESS,
             githubOAuth: !!(GITHUB_CLIENT_ID && GITHUB_CLIENT_SECRET && GITHUB_REDIRECT_URI),
-            redis: !!redis
+            redis: !!getRedis()
         }
     });
 });
@@ -1211,6 +1211,6 @@ app.listen(PORT, () => {
     logInfo('TURBO_TOKEN', TURBO_TOKEN);
     logInfo('TURBO_UPLOAD_URL', TURBO_UPLOAD_URL);
     logInfo('TURBO_PAYMENT_URL', TURBO_PAYMENT_URL);
-    logInfo('REDIS', redis ? '✅ IR | YES' : '❌ NAV | NO');
+    logInfo('REDIS', getRedis() ? '✅ IR | YES' : '❌ NAV | NO');
     console.log('='.repeat(60) + '\n');
 });
