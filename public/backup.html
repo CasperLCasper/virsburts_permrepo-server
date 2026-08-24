@@ -21,11 +21,11 @@
     <h1>🔒 PermRepo Backups</h1>
     <p class="subtitle">Izvēlies repozitoriju un sāc backupu uz Arweave</p>
     
-    <div id="authSection" style="display: none;">
+    <div id="authSection" class="hidden">
         <button id="loginButton" class="sign-button">Savienot ar GitHub</button>
     </div>
     
-    <div id="userSection" style="display: none;">
+    <div id="userSection" class="hidden">
         <div class="info-row text-left">
             <span class="info-label">Lietotājs</span>
             <span class="info-value" id="userName">-</span>
@@ -33,7 +33,7 @@
         <button id="logoutButton" class="logout-button">Izrakstīties</button>
     </div>
     
-    <div id="repoSection" style="display: none;">
+    <div id="repoSection" class="hidden">
         <div class="info-row text-left">
             <span class="info-label">Repozitorijs</span>
             <select id="repoSelect">
@@ -42,7 +42,7 @@
         </div>
     </div>
     
-    <div id="walletSection" style="display: none;">
+    <div id="walletSection" class="hidden">
         <div class="info-row text-left">
             <span class="info-label">Maka adrese</span>
             <input type="text" id="walletInput" placeholder="0x..." readonly>
@@ -50,12 +50,12 @@
         <button id="connectWalletButton" class="sign-button">Savienot maku</button>
     </div>
     
-    <div id="statusSection" style="display: none;">
+    <div id="statusSection" class="hidden">
         <div class="status" id="nftStatus"></div>
         <div class="status" id="subscriptionStatus"></div>
     </div>
     
-    <button id="backupButton" class="sign-button" style="display: none;" disabled>
+    <button id="backupButton" class="sign-button hidden" disabled>
         Sākt backupu
     </button>
     
