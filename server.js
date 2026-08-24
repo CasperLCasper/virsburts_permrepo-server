@@ -91,30 +91,40 @@ function logWarning(message) {
 }
 
 // ============================================================
-// ABIs | ABI
+// DROŠĪBAS GALVENES | SECURITY HEADERS
 // ============================================================
 
-const NFT_ABI = [
-    "function repositoryTokens(bytes32 repoHash) external view returns (uint256)",
-    "function ownerOf(uint256 tokenId) external view returns (address)",
-    "function getBackupCount(uint256 tokenId) external view returns (uint256)",
-    "function getManifestURI(uint256 tokenId) external view returns (string)",
-    "function getNonce(uint256 tokenId) external view returns (uint256)",
-    "function addBackup(uint256 tokenId, bytes32 manifestHash, bytes32 merkleRoot, string calldata manifestURI, uint256 deadline, bytes calldata signature) external"
-];
-
-const SUBSCRIPTION_ABI = [
-    "function isSubscribed(uint256 tokenId) external view returns (bool)"
-];
-
-const REGISTRY_ABI = [
-    "function getRepositoryByNFT(uint256 nftTokenId) external view returns (bytes32)"
-];
-
-const TREASURY_ABI = [
-    "function payTurbo(uint256 amount, bytes32 paymentId, address payable destination) external",
-    "function balance() external view returns (uint256)"
-];
+app.use((req, res, next) => {
+    // Content Security Policy
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; img-src 'self' data: https:; connect-src 'self' https://ar-io.dev https://arweave.net; font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; frame-ancestors 'none';");
+    
+    // Strict Transport Security
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+    
+    // X-Content-Type-Options
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    
+    // X-Frame-Options
+    res.setHeader('X-Frame-Options', 'DENY');
+    
+    // Referrer-Policy
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    
+    // Permissions-Policy
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    
+    // X-XSS-Protection
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    
+    // Sīkdatņu drošība | Cookie security
+    if (req.session) {
+        req.session.cookie.secure = true;
+        req.session.cookie.httpOnly = true;
+        req.session.cookie.sameSite = 'strict';
+    }
+    
+    next();
+});
 
 // ============================================================
 // EXPRESS MIDDLEWARE | STARPPROGRAMMATŪRA
@@ -128,7 +138,7 @@ app.use(session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false, httpOnly: true, maxAge: 3600000 }
+    cookie: { secure: true, httpOnly: true, sameSite: 'strict', maxAge: 3600000 }
 }));
 
 // ============================================================
