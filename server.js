@@ -741,6 +741,7 @@ app.post('/api/execute-backup', async (req, res) => {
         logInfo('Mainītie faili | Changed files', files.length);
         logInfo('Token ID', tokenId);
         logInfo('Failu izmaksas | File costs', fileCostEth + ' ETH');
+        logInfo('Wallet', walletAddress);
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!walletAddress) return res.status(400).json({ success: false, error: 'Nav walletAddress | Missing walletAddress' });
@@ -792,11 +793,14 @@ app.post('/api/execute-backup', async (req, res) => {
         logSection('💳 ZIP APMAKSA | ZIP PAYMENT');
         if (fileCostWei > 0n) {
             logInfo('Summa | Amount', fileCostEth + ' ETH');
+            logInfo('Wei | Wei', fileCostWei.toString());
             
             const turboAddress = await getTurboPaymentAddress();
             logInfo('Turbo adrese | Turbo address', turboAddress);
             
             const operatorWallet = getOperatorWallet(provider);
+            logInfo('Operatora adrese | Operator address', operatorWallet.address);
+            
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
             const filePaymentId = ethers.id(repoName + '-zip-' + Date.now().toString());
             const filePayTx = await treasuryWrite.payTurbo(fileCostWei, filePaymentId, turboAddress);
@@ -979,6 +983,7 @@ app.post('/api/finalize-backup', async (req, res) => {
         logInfo('Token ID', tokenId);
         logInfo('Faili | Files', files ? files.length : 0);
         logInfo('Manifesta izmaksas | Manifest costs', manifestCostEth + ' ETH');
+        logInfo('Wallet', walletAddress);
         
         if (!repoName) return res.status(400).json({ success: false, error: 'Nav repoName | Missing repoName' });
         if (!manifest) return res.status(400).json({ success: false, error: 'Nav manifest | Missing manifest' });
@@ -995,11 +1000,14 @@ app.post('/api/finalize-backup', async (req, res) => {
         logSection('💳 MANIFESTA APMAKSA | MANIFEST PAYMENT');
         if (manifestCostWei > 0n) {
             logInfo('Summa | Amount', manifestCostEth + ' ETH');
+            logInfo('Wei | Wei', manifestCostWei.toString());
             
             const turboAddress = await getTurboPaymentAddress();
             logInfo('Turbo adrese | Turbo address', turboAddress);
             
             const operatorWallet = getOperatorWallet(provider);
+            logInfo('Operatora adrese | Operator address', operatorWallet.address);
+            
             const treasuryWrite = new ethers.Contract(TREASURY_ADDRESS, TREASURY_ABI, operatorWallet);
             const manifestPaymentId = ethers.id(repoName + '-manifest-' + Date.now().toString());
             const manifestPayTx = await treasuryWrite.payTurbo(manifestCostWei, manifestPaymentId, turboAddress);
